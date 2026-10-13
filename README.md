@@ -2,6 +2,8 @@
 
 目标架构见 [PRD v0.2](docs/PRD-v0.2.md)、[接口契约](docs/INTERFACE-CONTRACT.md) 和 [架构图](docs/architecture-v0.2.png)。
 
+[运行环境](docs/RUNTIME-v0.2.md)与[工程验收记录](docs/VALIDATION-v0.2.md)已留档：真实基线与反思已验证；当前真实生成的三个代码候选被契约检查拒绝，尚无成功进化策略。合成候选闭环已通过。
+
 ## 运行
 
 ```bash

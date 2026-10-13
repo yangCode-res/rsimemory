@@ -1,6 +1,6 @@
 # RSI 记忆管理 Policy 进化系统 PRD
 
-版本：0.2　日期：2026年10月13日　状态：目标架构已确认；首轮 provisional config 可用于 smoke，正式比较参数仍待冻结。
+版本：0.2　日期：2026年10月13日　状态：按确认架构实施首版；工程验证中，正式比较参数仍待冻结。
 
 本文基于根目录 `PRD-memory-policy-rsi-v0.1.md` 与 `docs/architecture-v0.2.png`。该图已确认是本项目的 target architecture：蓝色为冻结链路和评测组件，绿色为可进化 memory policy，橙色为离线进化，红色为有效性约束。图中的结构是目标，不表示图示各组件均已实现。本文将模型工具协议、检查点批处理、基线、反思干预和安全执行要求具体化；v0.1 中未被覆盖的研究目标、患者级划分、版本谱系和成本分项要求继续有效。
 
@@ -70,7 +70,7 @@ Efficient 与 Mixed 分别报告六类准确率、样本数与 AVG，不合并�
 | 项目 | 首轮 provisional config | 状态/说明 |
 |---|---|---|
 | 检索基线 | BM25，字符 bigram；chunk 1200 chars，overlap 120 chars，top-k 5 | 可跑 smoke；正式值需在 run manifest 冻结 |
-| 语义基线 | 明确指定的本地 embedding 模型及路径 | 路径不可用则 skip，并报告未运行 |
+| 语义基线 | BAAI/bge-small-zh-v1.5，revision 7999e1d3359715c523056ef9478215996d62a620，CPU、batch 32 | 本地模型已准备；与 BM25 使用同一原文切分 |
 | 回答模型 | Qwen3.8；当前工程 provisional ID 为 `qwen3.8-27b`，thinking/speculative decoding disabled | 具体服务版本、解码参数待冻结 |
 | ReAct | max_steps=4；context_chars=16000 | 暂用字符预算；取得 tokenizer 后换算/核验 token 上限 |
 | 首轮模式 | Efficient | Mixed 暂未接入 |
@@ -80,7 +80,7 @@ Efficient 与 Mixed 分别报告六类准确率、样本数与 AVG，不合并�
 
 正式冻结前尚需确认：患者划分及 seed、语言、语义模型路径与版本、BM25 与 chunk 参数、ReAct 服务精确模型/解码、tokenizer 及 context token 上限、工具 JSON Schema、state/resource limits、调用超时与重试、provider、隔离后端及 judge 校准。smoke 只核对 plumbing，不产生性能结论；test 集保持不动。
 
-当前代码骨架已实现部分 replay 与基础记录，但 README 标明 judge、自动反思、候选沙箱执行、完整 MCTS 回传、Pareto 比较和 Mixed 适配尚待实现，且现有隔离只有模块级边界。因此架构图是 target architecture，本文接口和 Linux 沙箱属于实施要求；没有实际实现、运行和审查证据时不得声称安全隔离已交付或验证。
+首版已实现冻结 ReAct、规则与工程 judge、训练侧 Reflexion、代码生成、独立候选 replay、Git 谱系、训练收益回传及 Pareto 报告。Linux 测试验证 seccomp 对文件与网络访问的拒绝，合成数据已跑通三个候选；这不等同通用沙箱安全审计或科学性能验证。真实模型工程冒烟单独留档，逐题内容仅保留服务器。Mixed、派生摘要输出、policy 辅助模型、精确 token 上下文上限、多轮搜索及 no-diagnosis 对照仍属后续范围。
 
 ## 8. 验收标准
 

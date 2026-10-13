@@ -1,6 +1,6 @@
 # Memory Policy Interface Contract
 
-版本：0.2　日期：2026年10月13日　状态：目标架构已确认；首轮运行限制与 provisional config 已列明，正式参数待冻结。
+版本：0.2　日期：2026年10月13日　状态：首轮协议已实现；工程验证中，正式参数待冻结。
 
 本契约依据 `docs/architecture-v0.2.png` 定义固定执行器与候选 memory policy 的边界，以及固定 ReAct 模型可调用的只读工具。该图已确认为 target architecture：在线运行、固定评测/反馈、离线进化和红色有效性约束都属于目标结构。本文区分目标协议和首轮实现限制，不表示安全沙箱或全部接口已实现或验证。
 
@@ -26,7 +26,7 @@ search(state: JSONState, query: str, filters: JSON) -> list[str]
 
 ### `initialize(config)`
 
-创建一个全新、空的 policy state。config 仅含本实验冻结的非敏感运行参数和策略参数，不含问题答案、参考来源、其他候选状态或未来数据。返回值必须是 JSON object。宿主为每位患者和每个候选单独调用，不复用其他患者、父候选或前次 replay 的 state。
+创建一个全新、空的 policy state。config 仅含本实验冻结的非敏感运行参数和策略参数，不含问题答案、参考来源、其他候选状态或未来数据。返回值必须可编码为 JSON；object 和 array 均可使用。宿主为每位患者和每个候选单独调用，不复用其他患者、父候选或前次 replay 的 state。
 
 ### `ingest(state, session)`
 
@@ -95,7 +95,7 @@ policy 代码不能任意调用模型服务。允许的辅助模型调用须经�
 
 首版候选代码目标是在 Linux 隔离子进程中运行：先做 AST 检查，再用 seccomp 拒绝文件系统、网络及进程创建/控制相关系统调用，并配置 `RLIMIT` 资源上限。宿主与子进程仅通过受限 JSON 标准输入/输出交互；候选执行期间不得打开文件或创建网络/子进程。超时、内存/CPU/文件描述符等 `RLIMIT` 超限、seccomp 安装失败或子进程意外退出都必须 fail closed。语言级 AST 检查只能作为第一道防护，不能独立证明 Python 代码安全。
 
-非 Linux 环境不得执行自动生成的候选代码。当前仓库 README 说明现有边界只有模块级隔离，因此上述 Linux 子进程、seccomp、AST 与 `RLIMIT` 是首版目标防护，须实现、审查和验证后方可启用；文档不声称它们已经验证。隔离未就绪时可运行固定执行器及不执行候选代码的基线。纯函数签名不构成 OS 级安全保障。
+非 Linux 环境不得执行自动生成的候选代码。首版已经实现独立进程、seccomp、AST 与 RLIMIT，Linux 用例核验文件和网络 syscall 被拒绝；缺失隔离时仍 fail closed。该验证不是通用安全审计或绝对安全保证。纯函数签名本身不构成 OS 级保障。
 
 ## 7. 兼容性与版本冻结
 
@@ -118,4 +118,4 @@ policy 代码不能任意调用模型服务。允许的辅助模型调用须经�
 
 ## 8. 与当前骨架的差距
 
-仓库已有 `History`、`PlainRecord` 和 replay 原型，但当前 policy 使用类方法 `ingest/retrieve/export_state`，且回答调用尚未接入模型工具回路。README 还将 judge、自动 Reflexion、候选沙箱执行、完整 MCTS、Pareto 比较和 Mixed 适配列为待实现；现有隔离只有模块级边界。当前日志也不应直接用作在线 payload。架构图是 target architecture；后续实现需按本契约接入 JSON 纯函数、宿主控制的 preview/`read`，并实现/验证 Linux 沙箱后才能执行生成候选。首轮先跑 Efficient，Mixed 不可报成已接入；训练集初轮诊断后另行执行 no-error 对照。
+首版已接入冻结 ReAct 的 search/read、规则与自定义 judge、Reflexion、三候选代码生成、Linux 隔离 replay、Git 谱系、UCT 回传和 Pareto 输出。宿主不把私有参考行转发在线。合成 fixture 仅检验协议，不计作科学成绩。首轮 Efficient，Mixed 未接入；训练集初轮诊断后另行执行 no-diagnosis 对照。派生摘要返回与辅助模型 provider 未开放，因此当前代码进化空间比目标完整 policy 范围更窄，报告不得隐去这一限制。

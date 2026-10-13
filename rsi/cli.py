@@ -66,6 +66,20 @@ def main():
             'mode':'Efficient','seed':20261013,'language':args.language,
             'fixture':args.fixture,'model':args.model,'judge_model':args.judge_model or args.model,
             'speculation':'disabled','policy_auxiliary_model':'disabled',**vars(args)}
+    config['judge_model']=args.judge_model or args.model
+    config['actor_max_tokens']=1024;config['optimizer_max_tokens']=3072
+    try:
+        repo=Path(__file__).resolve().parent.parent
+        config['implementation_commit']=subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],stderr=subprocess.DEVNULL).decode().strip()
+        config['implementation_dirty']=bool(subprocess.check_output(['git','-C',str(repo),'status','--porcelain']).strip())
+    except subprocess.CalledProcessError:
+        config['implementation_commit']=None;config['implementation_dirty']=True
+    if args.dataset:
+        manifest=Path(args.dataset)/'download_manifest.json'
+        config['data_revision']=json.loads(manifest.read_text()).get('revision') if manifest.exists() else 'unverified'
+    if args.semantic_model_path:
+        manifest=Path(args.semantic_model_path)/'rsi-model-manifest.json'
+        config['semantic_manifest']=json.loads(manifest.read_text()) if manifest.exists() else {'revision':'unverified'}
     if args.fixture:
         sessions,queries=fixture_dataset();actor_client=FixtureClient();judge_client=FixtureClient();optimizer=FixtureClient()
     else:

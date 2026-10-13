@@ -1,6 +1,6 @@
 # RSI 记忆管理 Policy 进化系统 PRD
 
-版本：0.2　日期：2026年10月13日　状态：按确认架构实施首版；工程验证中，正式比较参数仍待冻结。
+版本：0.3　日期：2026年10月13日　状态：policy state 快照协议升级；本版本实现与运行验证另行记录，正式比较参数仍待冻结。
 
 本文基于根目录 `PRD-memory-policy-rsi-v0.1.md` 与 `docs/architecture-v0.2.png`。该图已确认是本项目的 target architecture：蓝色为冻结链路和评测组件，绿色为可进化 memory policy，橙色为离线进化，红色为有效性约束。图中的结构是目标，不表示图示各组件均已实现。本文将模型工具协议、检查点批处理、基线、反思干预和安全执行要求具体化；v0.1 中未被覆盖的研究目标、患者级划分、版本谱系和成本分项要求继续有效。
 
@@ -18,7 +18,7 @@
 
 冻结 ReAct 模型使用的工具协议只有：
 
-- `search(query, filters)`：候选纯函数返回 memory ID；宿主将可读取的命中解析为证据预览 `{id, text, session_id}` 返回给模型。
+- `search(query, filters)`：候选 Python 入口返回 memory ID；宿主将可读取的命中解析为证据预览 `{id, text, session_id}` 返回给模型。
 - `read(ids)`：由宿主执行器校验 ID 是否属于当前患者、当前检查点且可见，然后返回对应来源内容。
 
 回答模型不获得创建、修改、删除、合并、导入或导出记忆的工具。模型只能通过 `search` 获取证据预览、通过 `read` 获取完整证据；policy 的写入和内部 CRUD 由固定执行器调用 policy 接口完成。工具名称、参数形状、结果形状和 ReAct prompt 对所有版本相同，具体 JSON Schema、超时与重试配置须在实验配置中冻结。`session_id` 是时间定位字段，不得附带题型、答案来源或评分 metadata。
@@ -55,13 +55,19 @@ Efficient 与 Mixed 分别报告六类准确率、样本数与 AVG，不合并�
 
 性能与成本分开呈现。相同配置下展示六类准确率、Efficient/Mixed AVG、样本数、成本明细、运行状态和 Pareto 支配关系。初版只报告测量值及观察到的比较，不设成本淘汰阈值，不作未经重复测量支持的显著性结论。
 
-## 6. 安全实现要求与限制
+## 6. Policy 入口、状态快照与隔离
 
-候选 policy 的目标接口为受限 Python 纯函数，仅接收和返回 JSON-compatible 数据：`initialize(config)->state`、`ingest(state,session)->state`、`search(state,query,filters)->memory IDs`。沙箱禁止任意 import、文件读写、网络、进程启动及其他副作用；policy 函数只能从输入和自身 JSON state 派生新 state 或检索结果。首轮允许 policy 在自身 state 内组织派生结构，但 `search` 只能返回宿主登记的原文来源 ID；派生文本返回与读取暂不开放，待 lineage 和派生记录 schema 实现后再启用。宿主持有原文、答案、来源标注和运行时能力。`read(ids)` 必须由宿主实施来源、患者和检查点校验。
+候选 policy 使用固定 Python 入口：`initialize(config)`、`ingest(state, session)`、`search(state, query, filters)`。policy 使用普通 Python 语义，可定义类和实例、使用 lambda、异常处理、推导式及运行环境中已安装的库；state 不限于 JSON 结构。候选依赖及其版本在每次新 run 的环境清单中冻结。
 
-首版候选代码只允许在 Linux 上的隔离子进程中执行，采用 AST 检查、seccomp 拒绝文件系统/网络/进程相关系统调用，并配置 `RLIMIT` 资源上限。隔离初始化、策略检查、执行或结果验证任一步骤失败都 fail closed：该候选标记失败并停止，不降级到普通 Python 执行。非 Linux 环境不得执行自动生成的候选代码。纯函数协议和 Python 语言限制本身不能构成操作系统安全边界；这些措施是计划的首版防护而非已验证的安全保证。固定执行器可继续运行不执行外部候选代码的基线工作。
+`initialize` 创建初始 state，`ingest` 返回推进后的 state。state 可以是任意 Python 对象；执行器通过 cloudpickle 对运行时返回对象尝试创建快照。成功时，宿主编排层只保存 base64 编码的不透明快照及必要的运行元数据，不检查或反序列化其中的候选 pickle。候选不需要承诺所有对象均可序列化；对象实际无法快照、依赖缺失或 worker 无法恢复时，记为运行错误，保留错误信息并按失败规则处理，不将其伪称为全部对象兼容。
 
-受控辅助模型调用通过宿主提供的 provider 进行计量与白名单控制，可在初版推迟接入。policy 不能自行建立模型客户端或绕过 provider。工具可见性、状态大小和调用资源限制须由宿主配置并记录。
+只有独立 worker 完成隔离设置后，才能在该 worker 内恢复 cloudpickle 快照。每次 `search` 都从检查点快照恢复一个独立副本，调用后丢弃副本；即使 policy 在调用过程中修改副本，也不持久化变更。`search` 只返回 memory ID 列表，不能推进状态；只有 `ingest` 成功返回并完成快照，才更新宿主保存的状态版本。检查点内所有题目仍基于同一快照，互不共享答案或对话历史。
+
+v0.3 运行目标为 Linux 独立 worker。Landlock 只允许只读访问 Python 运行库及明确列出的运行依赖，禁止访问数据集、答案、其他私有数据文件和其他患者内容，并禁止所有文件写入；seccomp 限制网络及进程控制等系统调用。candidate 源码、输入、快照和输出通过受控管道传递，不能依靠 worker 读取数据文件。隔离设置、快照恢复、调用、返回值检查或重新快照任一失败均 fail closed 并记录为运行错误；非 Linux 不执行生成候选。该边界是项目的运行限制设计，不是通用安全审计或对所有 Python 对象/依赖的安全保证。新隔离在单独实现和验证前，不能声称已用于某个 run。
+
+宿主持有原始会话、答案、来源标注、工具注册和模型服务。ReAct 仍只可使用冻结的 `search(query, filters)` 与 `read(ids)`；policy `search` 只能返回当前患者和检查点可见的宿主登记原文 ID。宿主校验每个 ID，再由 `search` 工具返回 `{id,text,session_id}` 证据预览，由 `read` 返回完整证据。候选不能扩大原文来源范围，模型可见输入和工具输出仍禁止 `query_type`、gold、来源答案映射、评分理由及未来信息。policy 的内部类/对象形态不会改变这些隐私边界。
+
+受控辅助模型调用通过宿主 provider 计量；provider 未接入时标记 disabled，不允许候选直接连接模型服务。调用与状态快照成本分别记录。
 
 ## 7. 待冻结运行参数
 
@@ -78,9 +84,9 @@ Efficient 与 Mixed 分别报告六类准确率、样本数与 AVG，不合并�
 | 辅助模型 provider | 未接入时 disabled | 禁止直连；报告未启用，不报零成本 |
 | 数据 | smoke 可用 train/validation；test 始终封存 | 正式候选搜索不得读取 test |
 
-正式冻结前尚需确认：患者划分及 seed、语言、语义模型路径与版本、BM25 与 chunk 参数、ReAct 服务精确模型/解码、tokenizer 及 context token 上限、工具 JSON Schema、state/resource limits、调用超时与重试、provider、隔离后端及 judge 校准。smoke 只核对 plumbing，不产生性能结论；test 集保持不动。
+正式冻结前尚需确认：患者划分及 seed、语言、语义模型路径与版本、BM25 与 chunk 参数、ReAct 服务精确模型/解码、tokenizer 及 context token 上限、工具 JSON Schema、候选 Python 依赖、快照格式/大小和错误处理、worker 资源限制、调用超时与重试、provider、Landlock 规则、seccomp profile 及 judge 校准。smoke 只核对 plumbing，不产生性能结论；test 集保持不动。
 
-首版已实现冻结 ReAct、规则与工程 judge、训练侧 Reflexion、代码生成、独立候选 replay、Git 谱系、训练收益回传及 Pareto 报告。Linux 测试验证 seccomp 对文件与网络访问的拒绝，合成数据已跑通三个候选；这不等同通用沙箱安全审计或科学性能验证。真实模型工程冒烟单独留档，逐题内容仅保留服务器。Mixed、派生摘要输出、policy 辅助模型、精确 token 上下文上限、多轮搜索及 no-diagnosis 对照仍属后续范围。
+本协议变更不代表 v0.3 的对象快照、独立 worker、Landlock 或 seccomp 路径已实现或验证。历史 v0.2 的运行与验收记录保留原样；任何采用 v0.3 的新运行必须使用新的 run ID，记录 `contract_version=v0.3`、实际 worker/依赖/隔离配置和真实结果，不覆盖历史 `VALIDATION-v0.2`、`RUNTIME-v0.2` 或既有运行目录。不得把历史测试结论外推为 v0.3 测试结果。
 
 ## 8. 验收标准
 

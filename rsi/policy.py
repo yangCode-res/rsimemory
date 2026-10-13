@@ -1,12 +1,9 @@
-"""Small auditable memory policies and a restricted generated-policy wrapper.
-
-Generated policies are deliberately a restricted Python dialect, executed in a
-separate process.  This is a robustness boundary for candidate code, not a
-claim of operating-system level security.
-"""
+"""Memory baselines and host wrapper for ordinary Python object-state policies."""
 from __future__ import annotations
 
 import copy
+import base64
+import hashlib
 import json
 import math
 import re
@@ -15,7 +12,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .sandbox import SandboxError, run_candidate
+from .sandbox import ContractError, SandboxError, run_candidate
 
 
 def _grams(text: str) -> list[str]:
@@ -199,14 +196,16 @@ class PlainPolicy:
 
 
 class GeneratedPolicy:
-    """Host wrapper for a candidate in the sandbox's restricted dialect.
+    """Host wrapper for ordinary Python candidates and opaque object snapshots.
 
     The host retains original chunks and validates every candidate ID against
     the eligible, visible registry before returning evidence.
     """
 
+    serializable = True  # Host snapshot capability, not a promise about every Python object.
+
     def __init__(self, source: str, config: dict[str, Any] | None = None,
-                 *, timeout_s: float = 2.0, memory_bytes: int = 128 * 1024 * 1024):
+                 *, timeout_s: float = 30.0, memory_bytes: int = 2 * 1024 * 1024 * 1024):
         self.source = source
         self.config = copy.deepcopy(config or {})
         self.timeout_s = timeout_s
@@ -223,27 +222,43 @@ class GeneratedPolicy:
         result = self._call("initialize", {"config": self.config})
         self._state = result["state"]
         self.cost["source_storage_bytes"] = 0
-        self.cost["candidate_state_bytes"] = self._json_size(self._state)
+        self.cost["candidate_state_bytes"] = self._snapshot_size(self._state)
         self.cost["storage_bytes"] = self.cost["source_storage_bytes"] + self.cost["candidate_state_bytes"]
         self.cost["peak_storage_bytes"] = self.cost["storage_bytes"]
 
     def _call(self, operation: str, payload: dict[str, Any]):
         start = time.perf_counter()
-        result = run_candidate(self.source, operation, payload, timeout_s=self.timeout_s,
-                               memory_bytes=self.memory_bytes)
-        elapsed = time.perf_counter() - start
-        self.cost["sandbox_calls"] += 1
-        self.cost["sandbox_seconds"] += elapsed
-        if operation == "initialize":
-            self.cost["initialize_calls"] += 1
-        elif operation in {"ingest", "search"}:
-            self.cost[f"{operation}_calls"] += 1
-            self.cost[f"{operation}_seconds"] += elapsed
-        return result
+        error = None
+        try:
+            return run_candidate(self.source, operation, payload, timeout_s=self.timeout_s,
+                                 memory_bytes=self.memory_bytes)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            elapsed = time.perf_counter() - start
+            self.cost["sandbox_calls"] += 1
+            self.cost["sandbox_seconds"] += elapsed
+            if operation == "initialize":
+                self.cost["initialize_calls"] += 1
+            elif operation in {"ingest", "search"}:
+                self.cost[f"{operation}_calls"] += 1
+                self.cost[f"{operation}_seconds"] += elapsed
+            if error is not None: error.policy_cost = copy.deepcopy(self.cost)
 
     @staticmethod
     def _json_size(value: Any) -> int:
         return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+    def _snapshot_size(self, snapshot):
+        if not isinstance(snapshot,dict) or snapshot.get("serializer") != "cloudpickle-base64-v1":
+            raise ContractError("invalid opaque state snapshot")
+        blob = base64.b64decode(snapshot["data"], validate=True)
+        if snapshot.get("sha256") != hashlib.sha256(blob).hexdigest():
+            raise ContractError("state snapshot checksum mismatch")
+        if snapshot.get("source_sha256") != hashlib.sha256(self.source.encode()).hexdigest():
+            raise ContractError("state snapshot belongs to a different policy version")
+        return len(blob)  # No pickle deserialization ever occurs in the host.
 
     def ingest(self, chunk: dict[str, Any]) -> None:
         original = copy.deepcopy(chunk)
@@ -260,7 +275,7 @@ class GeneratedPolicy:
         self._state = result["state"]
         self._registry[cid] = original
         self.cost["source_storage_bytes"] = self._json_size(list(self._registry.values()))
-        self.cost["candidate_state_bytes"] = self._json_size(self._state)
+        self.cost["candidate_state_bytes"] = self._snapshot_size(self._state)
         self.cost["storage_bytes"] = self.cost["source_storage_bytes"] + self.cost["candidate_state_bytes"]
         self.cost["peak_storage_bytes"] = max(self.cost["peak_storage_bytes"], self.cost["storage_bytes"])
 
@@ -285,16 +300,16 @@ class GeneratedPolicy:
         result = self._call("search", {"state": self._state, "query": str(query), "filters": filters})
         candidate_ids = result.get("ids")
         if not isinstance(candidate_ids, list):
-            raise SandboxError("candidate search must return a list of IDs")
+            raise ContractError("candidate search must return a list of IDs")
         if any(not isinstance(candidate_id, (str, int, float)) for candidate_id in candidate_ids):
-            raise SandboxError("candidate search returned a non-scalar ID")
+            raise ContractError("candidate search returned a non-scalar ID")
         allowed = []
         for candidate_id in candidate_ids:
             cid = str(candidate_id)
             if cid not in eligible_ids:
-                raise SandboxError("candidate search returned an unknown or out-of-scope ID")
+                raise ContractError("candidate search returned an unknown or out-of-scope ID")
             if cid in allowed:
-                raise SandboxError("candidate search returned a duplicate ID")
+                raise ContractError("candidate search returned a duplicate ID")
             allowed.append(cid)
         allowed = allowed[: self.top_k]
         self._visible_ids = set(allowed)
@@ -314,6 +329,7 @@ class GeneratedPolicy:
     def restore(self, snapshot: dict[str, Any]) -> None:
         if not isinstance(snapshot, dict) or "state" not in snapshot or not isinstance(snapshot.get("registry"), dict):
             raise ValueError("invalid GeneratedPolicy snapshot")
+        self._snapshot_size(snapshot["state"])
         self._state = copy.deepcopy(snapshot["state"])
         self._registry = copy.deepcopy(snapshot["registry"])
         self.cost = copy.deepcopy(snapshot.get("cost", self.cost))

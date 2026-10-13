@@ -1,12 +1,12 @@
 # Memory Policy Interface Contract
 
-版本：0.2　日期：2026年10月13日　状态：首轮协议已实现；工程验证中，正式参数待冻结。
+版本：0.3　日期：2026年10月13日　状态：对象快照协议升级；v0.3 实现与运行验证另行记录，正式参数待冻结。
 
 本契约依据 `docs/architecture-v0.2.png` 定义固定执行器与候选 memory policy 的边界，以及固定 ReAct 模型可调用的只读工具。该图已确认为 target architecture：在线运行、固定评测/反馈、离线进化和红色有效性约束都属于目标结构。本文区分目标协议和首轮实现限制，不表示安全沙箱或全部接口已实现或验证。
 
 ## 1. 信任边界
 
-固定执行器拥有原始会话、患者与检查点上下文、问题/答案/来源标注、评分器、存储、工具派发和模型 provider。候选 policy 只处理当前患者、当前 replay 的 JSON 状态与执行器明确传入的会话；它不持有文件、网络、数据库或模型客户端。首轮可在 state 内组织或更新自己的派生结构，但候选只能返回已登记的原文来源 ID；生成派生文本供模型读取暂不开放，须先定义并实现 lineage 和派生记录 schema。
+固定执行器拥有原始会话、患者与检查点上下文、问题/答案/来源标注、评分器、存储、工具派发和模型 provider。候选 policy 在隔离 worker 内运行普通 Python，使用本次调用传入的 state 与会话；它不获得私有数据文件或答案库的读取权限。编排宿主只保存 base64 编码的不透明 cloudpickle 快照；可以解码字节计算长度和校验和，但从不反序列化候选 pickle。恢复只发生在独立 worker 完成隔离设置之后。
 
 回答模型只获得 `search(query, filters)` 和 `read(ids)` 两个工具。二者只读。不得暴露 `create`、`update`、`delete`、`merge`、`write`、`ingest`、`export` 等会改变记忆或访问外部状态的工具。记忆更新只能由固定执行器按回放流程调用 policy 函数完成。
 
@@ -14,35 +14,37 @@
 
 在线链路由固定执行器、可进化 policy、冻结 ReAct、独立评分器及评测/成本汇总组成。执行器把历史会话送给 policy；ReAct 仅经 `search/read` 读取证据，输出答案与工具轨迹；离线评分器从隔离数据读取标准答案和来源标注。操作与检索日志进入训练诊断，Reflexion 形成聚类/归因和定向 replay，之后生成三个修改假设及子 policy 代码。边界检查/隔离把违规或运行失败候选送入失败归档，将有效候选送入版本树及一次 UCT 展开；候选比较依据验证集汇总与成本形成报告。以上是目标图中的组件关系，本契约只定义接口边界，不代表该链路已全部接通。
 
-## 2. Policy 函数
+## 2. Policy Python 入口与对象快照
 
-policy 入口为三个同步纯函数。参数和结果必须可编码为 JSON；函数不得依赖隐藏全局状态、时间、随机数、环境变量或外部服务。`search` 的候选函数只返回 ID；工具层的 evidence preview 由宿主依据 ID 构造，不是候选函数返回自由文本。
+policy 接口固定为三个普通 Python 入口；以下签名表示调用约定，不限制函数实现形式：
 
 ```python
-initialize(config: JSON) -> JSONState
-ingest(state: JSONState, session: JSON) -> JSONState
-search(state: JSONState, query: str, filters: JSON) -> list[str]
+initialize(config)
+ingest(state, session)
+search(state, query, filters)
 ```
+
+候选可以使用 Python 类/实例、lambda、异常处理、推导式和运行环境中已安装的库，state 可以是任意 Python 对象；宿主将 state 与候选模块共同保存，以维持类身份和模块全局状态的一致性。候选依赖及版本随每个 run 冻结；隔离 worker 的 OS 能力边界仍禁止通过文件、网络或进程能力获取私有数据。
 
 ### `initialize(config)`
 
-创建一个全新、空的 policy state。config 仅含本实验冻结的非敏感运行参数和策略参数，不含问题答案、参考来源、其他候选状态或未来数据。返回值必须可编码为 JSON；object 和 array 均可使用。宿主为每位患者和每个候选单独调用，不复用其他患者、父候选或前次 replay 的 state。
+创建一个全新 policy state。config 仅含冻结的非敏感运行参数和策略参数，不含问题答案、参考来源标注、其他候选状态或未来数据。返回值可以是任意 Python 对象。宿主为每位患者和每个候选单独调用，不复用其他患者、父候选或前次 replay 的 state。
 
 ### `ingest(state, session)`
 
-把固定执行器按时间顺序提供的一段历史会话纳入 policy，并返回新的 state。函数只能依据入参中的当前会话和现有 state 工作。它可以在内部提取、合并、更新、删除和重排派生记忆或索引；这些 CRUD 操作是 policy 内部实现细节，不是回答模型工具。
+把固定执行器按时间顺序提供的一段历史会话纳入 policy，并返回推进后的 state。它可以使用任意普通 Python 结构在内部提取、合并、更新、删除和重排派生记忆或索引；这些 CRUD 操作是 policy 内部实现细节，不是回答模型工具。
 
 session 只包含允许 policy 处理的原始历史内容与必要的会话标识，不包括问题、题型、答案、评分、来源标注或未来会话。原始会话是只读输入；policy 可以变换其内容形成派生状态，但不能请求宿主删除或改写原文。
 
-输入 state 是通过 JSON 传入独立子进程的副本；函数可以在副本上更新并返回 state。宿主只采用返回值，不共享子进程内存。在 search 时返回值不得推进宿主快照；只有 ingest 可以更新下一检查点的状态。
+函数可以修改传入对象，也可以返回新对象；返回值作为 `ingest` 之后的当前状态。可信宿主适配层在隔离 worker 内尝试用 cloudpickle 对实际对象做快照。候选无须声明“可序列化”；如果对象或依赖实际不能序列化，记录为运行错误，不假定 cloudpickle 能处理所有 Python 对象。编排宿主只保存生成的 base64 不透明快照。
 
 ### `search(state, query, filters)`
 
-纯检索函数，在给定快照中返回零个或多个 memory ID，顺序表示候选相关性。不得返回答案文本、来源 metadata、文件路径、任意 URL 或可执行内容。结果只是一组标识符，后续内容读取由宿主执行。
+在给定状态副本中检索，返回零个或多个 memory ID，顺序表示候选相关性。候选代码可使用普通 Python 实现；宿主仅接受协议要求的 ID 列表，不接受答案文本、自由来源 metadata、文件路径、任意 URL 或可执行内容。后续内容读取由宿主执行。
 
 `query` 是当前问题的用户可见文本，不附带题型、标准答案、答案来源或评分信息。`filters` 由宿主按冻结 schema 构造，只表达当前患者、当前检查点、允许的语言/模式等可见范围；候选不得扩大过滤范围。字段全集和值域待运行配置冻结。
 
-目标架构允许检索 policy 派生记录，但任何派生记录必须先有可审计 lineage。首轮实现更严格：每个返回 ID 只能是当前患者、当前检查点内由宿主预先登记的原文来源 ID；不接受 policy 自造 ID、派生文本 ID 或无法解析的 ID。宿主拒绝未知、重复或超出数量上限的结果，并拒绝来源属于其他患者、未来会话、答案或不可见数据的记录。ID 不得承载内容或通过编码泄漏数据。待 lineage 表示和派生记录 schema 落地后，才能开放派生证据的 `read`。
+每个返回 ID 必须是当前患者、当前检查点内由宿主预先登记的原文来源 ID。宿主拒绝未知 ID、重复 ID、超出数量上限的结果及其他患者/未来会话/答案相关 ID。ID 不得承载内容或通过编码泄漏数据。对派生文本的模型读取仍需另行定义 lineage 与派生记录协议。
 
 ## 3. 固定执行器的只读工具
 
@@ -63,23 +65,23 @@ session 只包含允许 policy 处理的原始历史内容与必要的会话标�
 }
 ```
 
-这段示意约定字段含义，不是 JSON Schema 的最终定义。最终协议还需冻结字段必填性、长度/数量上限、错误响应、编码、超时和重试行为。候选 policy 的纯 `search(state, query, filters)` 返回 ID 列表；宿主验证 ID 后，`search` 工具返回每条命中的短证据预览 `{id,text,session_id}`。模型可对需要的 ID 调用 `read`，获得完整证据。模型最终基于证据作答。工具结果只提供原文证据及时间定位，不含答案标签、题型、答案来源映射、未来记录或评分信息。
+这段示意约定字段含义，不是 JSON Schema 的最终定义。最终协议还需冻结字段必填性、长度/数量上限、错误响应、编码、超时和重试行为。候选 policy 的 `search(state, query, filters)` 返回 ID 列表；宿主验证 ID 后，`search` 工具返回每条命中的短证据预览 `{id,text,session_id}`。模型可对需要的 ID 调用 `read`，获得完整证据。模型最终基于证据作答。工具结果只提供原文证据及时间定位，不含答案标签、题型、答案来源映射、未来记录或评分信息。
 
 ### `search(query, filters)` 宿主分派
 
-宿主把当前 state、问题文本和经校验 filters 传给 policy 的纯 `search` 函数，然后验证返回列表并用来源注册表构造 evidence preview `{id,text,session_id}`。preview 文本和 session_id 必须来自宿主登记的来源，不信任候选随 ID 附带的数据。宿主可限制检索调用数、预览长度与每次 ID 数；限制值须冻结并记录。此操作不推进 state。
+宿主从当前检查点的不透明快照恢复一个独立副本到已隔离 worker，再把 state、副本内问题文本和经校验 filters 传给候选 `search` 入口。宿主验证返回 ID 列表，并用来源注册表构造 evidence preview `{id,text,session_id}`。preview 文本和 session_id 必须来自宿主登记的来源，不信任候选随 ID 附带的数据。每次调用都重新从同一检查点快照恢复，不保存 search 对副本造成的任何变更；候选返回非 ID 列表时视为协议运行错误。宿主可限制检索调用数、预览长度与每次 ID 数；限制值须冻结并记录。
 
 ### `read(ids)` 宿主分派与来源校验
 
-宿主逐个验证 ID 可解析、属于当前患者和当前 policy state，并且其全部来源 lineage 在当前检查点已可见。通过校验后宿主读取关联内容；失败时对违规 ID 不返回内容，记录拒绝原因。宿主不相信候选 policy 声称的患者、时间或来源字段，需用自己的来源注册表验证。
+宿主逐个验证 ID 可解析、属于当前患者和当前 policy 检查点，并且所指原文来源在当前检查点已可见。通过校验后宿主读取关联内容；失败时对违规 ID 不返回内容，记录拒绝原因。宿主不相信候选 policy 声称的患者、时间或来源字段，需用自己的来源注册表验证。
 
-返回内容限于已授权的历史来源。首轮只支持宿主已登记的原文来源 ID，返回完整原文 chunk 与来源时间。首轮不支持 policy 生成的派生文本；启用前必须实现派生记录 schema、从派生内容到原文来源的 lineage 校验及持久化审计。执行器保证被读取的原文不晚于当前检查点；policy 无权令宿主访问原始 future history。
+返回内容限于已授权的历史来源。当前工具协议只支持宿主已登记的原文来源 ID，返回完整原文 chunk 与来源时间。候选可以在自己的对象 state 中维护派生内容，但 `search` 只能返回登记的原文 ID；派生文本成为可读结果前必须另行定义派生记录 schema、lineage 校验及审计。执行器保证被读取的原文不晚于当前检查点；policy 无权令宿主访问原始 future history。
 
 ## 4. 执行时序和快照
 
-执行器为每个 `(policy version, patient, split, replay)` 组合单独初始化状态。历史会话按冻结排序规则逐个摄入。到检查点时，执行器冻结当下 policy state 和可见来源集合；该检查点所有问题都从同一快照独立运行。
+执行器为每个 `(policy version, patient, split, replay)` 组合单独初始化状态。历史会话按冻结排序规则逐个摄入；每次成功的 `ingest` 返回状态后，worker 尝试生成新的 cloudpickle 快照，由宿主替换该 replay 当前的不透明快照。到检查点时，执行器冻结当下 policy state 和可见来源集合；该检查点所有问题都从同一快照独立运行。
 
-每道题使用新建的 ReAct 对话上下文。问题之间不共享工具调用历史、题目文本、回答或临时 state；`search` 与 `read` 为只读，所以不会改变快照。对一个检查点最后一道题的读取也不能改变下一题的结果。到下一个检查点时，只有新会话的 `ingest` 调用可以推进 policy state。
+每道题使用新建的 ReAct 对话上下文。问题之间不共享工具调用历史、题目文本、回答或临时 state；每个 `search` 调用在隔离 worker 中从同一已保存快照恢复独立副本，并在调用后丢弃副本，所以 `search` 对持久 policy state 只读。`read` 由宿主执行，也不写入 policy。对一个检查点最后一道题的读取也不能改变下一题的快照。只有后续会话的 `ingest` 可推进 policy state。
 
 在线数据视图移除 `query_type`、答案、答案来源、评分/判分理由、未来消息及仅供诊断使用的 metadata。评分器在独立的离线阶段基于单独保存的参考标注评分。日志可以保留诊断字段，但在线请求和工具 payload 必须用独立结构构造，禁止直接转发含参考标注的原始行。
 
@@ -89,17 +91,19 @@ policy 代码不能任意调用模型服务。允许的辅助模型调用须经�
 
 固定回答模型和 judge 的调用由执行器另行计量，分别报告，不与 policy 管理成本合并。policy 调用和状态处理至少记录初始化、摄入、检索阶段耗时；存储记录当前及峰值 state 字节数。成本报告先呈现实测值，不施加阈值。
 
-## 6. 候选代码限制与初版安全实现
+## 6. 快照与候选运行隔离
 
-候选函数以受限 Python 执行，输入/输出采用 JSON 序列化。策略代码不得任意 import；不得使用文件系统、网络、子进程、动态代码执行、系统命令、环境变量或反射逃逸；不得修改固定执行器、ReAct prompt、工具注册、评分器或数据访问实现。异常、超时、非法 JSON 或资源超限均使该候选运行失败并留下记录。
+候选在固定 Python runtime 中使用普通 Python 语义，可以创建类和实例、定义 lambda、使用异常处理和推导式、导入运行环境已安装的库。每次新 run 须冻结 Python/runtime、cloudpickle 及候选依赖版本；未安装的依赖不自动联网安装，需作为受审查的运行环境依赖另行配置。
 
-首版候选代码目标是在 Linux 隔离子进程中运行：先做 AST 检查，再用 seccomp 拒绝文件系统、网络及进程创建/控制相关系统调用，并配置 `RLIMIT` 资源上限。宿主与子进程仅通过受限 JSON 标准输入/输出交互；候选执行期间不得打开文件或创建网络/子进程。超时、内存/CPU/文件描述符等 `RLIMIT` 超限、seccomp 安装失败或子进程意外退出都必须 fail closed。语言级 AST 检查只能作为第一道防护，不能独立证明 Python 代码安全。
+宿主适配层负责快照格式：在独立 worker 中对 `initialize` 或 `ingest` 返回的实际对象尝试 `cloudpickle.dumps`，成功后编码为 base64。编排宿主仅存储此不透明 base64 快照与必要元数据，绝不对候选 pickle 执行 `loads`/反序列化，也不把候选快照当可信结构检查。恢复流程由新的独立 worker 承担，且只能在隔离策略成功安装后调用 `cloudpickle.loads`。worker 使用本次 run 中与快照相同的候选源码和依赖，以恢复候选定义的类。候选无需声明所有对象可序列化；具体返回值若无法快照、依赖不可用或无法恢复，视为运行错误。任何失败都不能改用宿主进程反序列化作为回退。
 
-非 Linux 环境不得执行自动生成的候选代码。首版已经实现独立进程、seccomp、AST 与 RLIMIT，Linux 用例核验文件和网络 syscall 被拒绝；缺失隔离时仍 fail closed。该验证不是通用安全审计或绝对安全保证。纯函数签名本身不构成 OS 级保障。
+v0.3 目标只允许 Linux 独立 worker 执行候选：Landlock 设置只读访问 Python 解释器运行库及本 run 明确允许的已安装 Python 依赖；拒绝数据集、gold/来源标注、其他患者内容等私有数据文件，并拒绝所有文件写入。candidate source、session、query、filters、快照和结果由可信执行器通过受控管道传入/传出，候选不能用文件路径打开输入数据。seccomp 进一步限制网络与进程控制等系统调用；具体规则须按 Python runtime 做兼容配置和冻结。
+
+Landlock/seccomp 初始化失败、快照解码异常、候选异常、超时、返回协议错误或重新快照失败均 fail closed，记录为候选运行错误。非 Linux 环境不执行生成候选代码。上述措施限定项目运行时可用能力，不构成通用安全审计、绝对安全保证或适用于任意 Python 依赖的证明。v0.3 文档变更本身不表示该隔离和恢复流程已经实现或验证；在新的实现记录前，不得声称 v0.3 run 已通过这些约束。
 
 ## 7. 兼容性与版本冻结
 
-任何契约改变都必须产生新接口版本或实验配置版本，并记录摘要。对每次 run 冻结 Python/runtime 版本、候选入口、JSON Schema、tool prompt、state/resource limits、session/query JSON schema、排序规则、检查点规则、provider 及模型参数、隔离后端、错误/超时处理和检索限制。候选不能更改固定协议。
+任何契约改变都必须产生新接口版本或实验配置版本，并记录摘要。对每次 run 冻结 Python/runtime、cloudpickle 及候选依赖版本，候选入口，ReAct 工具 JSON Schema 与 prompt，query/filters/session 输入 schema，快照格式与错误处理，排序规则、检查点规则、provider 及模型参数，Landlock 读路径、seccomp profile、超时/资源限制和检索限额。候选不能更改固定 ReAct 协议、宿主数据权限或隔离配置。
 
 首轮 provisional config（可用于 plumbing/smoke，不代表正式冻结）：
 
@@ -114,8 +118,10 @@ policy 代码不能任意调用模型服务。允许的辅助模型调用须经�
 | 辅助模型 provider | 未启用时 `disabled` | 不得通过直连调用规避计量 |
 | 数据集 | smoke 可用 train/validation 流程 | test 不读取、不运行、不参与调参 |
 
-可用 smoke 仅验证 plumbing，不代表性能评估，也不允许读取 test。正式运行前待冻结的细节包括：患者划分和 seed、语言、语义模型路径与版本、BM25/chunk 参数、Qwen 服务精确版本及解码、tokenizer 与 context token 上限、工具 JSON Schema、memory ID 注册表、lineage 表示、session/filters schema、派生记录 schema、state/resource limits、预览/搜索/读取限额、调用超时与重试、provider、Linux seccomp profile 和 judge 校准。未确定前采用宿主拒绝未知字段和未知 ID 的保守行为。
+可用 smoke 仅验证 plumbing，不代表性能评估，也不允许读取 test。正式运行前待冻结的细节包括：患者划分和 seed、语言、语义模型路径与版本、BM25/chunk 参数、Qwen 服务精确版本及解码、tokenizer 与 context token 上限、工具 JSON Schema、memory ID 注册表、lineage 表示、session/filters schema、派生记录 schema、cloudpickle/runtime/候选依赖版本、快照大小、worker resource limits、预览/搜索/读取限额、调用超时与重试、provider、Linux Landlock 读路径、seccomp profile 和 judge 校准。未确定前采用宿主拒绝未知字段和未知 ID 的保守行为。
 
-## 8. 与当前骨架的差距
+## 8. 版本迁移与运行记录
 
-首版已接入冻结 ReAct 的 search/read、规则与自定义 judge、Reflexion、三候选代码生成、Linux 隔离 replay、Git 谱系、UCT 回传和 Pareto 输出。宿主不把私有参考行转发在线。合成 fixture 仅检验协议，不计作科学成绩。首轮 Efficient，Mixed 未接入；训练集初轮诊断后另行执行 no-diagnosis 对照。派生摘要返回与辅助模型 provider 未开放，因此当前代码进化空间比目标完整 policy 范围更窄，报告不得隐去这一限制。
+本文件将接口协议升级至 v0.3；它不是代码实现或验收报告。历史 v0.2 运行、`VALIDATION-v0.2` 与 `RUNTIME-v0.2` 保持不变，不能从历史记录推断对象快照或 v0.3 隔离已验证。首次采用 v0.3 的新运行须使用新的 run ID 和目录，配置与报告明确记载 `contract_version: v0.3`、候选依赖、cloudpickle、snapshot size/error、worker 隔离参数及结果；不得覆盖或重命名历史运行。
+
+在线 ReAct 的固定 `search/read` 结构、只返回宿主登记的原文 ID、患者与检查点范围、gold/future 隔离、检查点同快照及问题间独立性继续有效。当前证据查询只读：每次 `search` 恢复独立副本并丢弃，只有 `ingest` 会生成新持久状态版本。Mixed 尚未接入、no-diagnosis 对照及其他既有实验限制沿用对应运行配置和历史记录，不由本协议更新推断其已完成。

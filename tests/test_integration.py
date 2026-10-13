@@ -86,11 +86,11 @@ class PipelineIntegration(unittest.TestCase):
     def test_rejected_source_is_preserved_without_execution(self):
         class InvalidCodeClient:
             def complete(self,*args,**kwargs):
-                return {'text':json.dumps({'code':'import os'}),'usage':{'completion_tokens':3},
+                return {'text':json.dumps({'code':'def broken(:\n    pass'}),'usage':{'completion_tokens':3},
                         'latency_s':1.,'role':'codegen'}
         with self.assertRaises(Exception) as caught:
             generate(InvalidCodeClient(),{},'parent')
-        self.assertEqual(caught.exception.candidate_source,'import os')
+        self.assertEqual(caught.exception.candidate_source,'def broken(:\n    pass')
         self.assertEqual(caught.exception.codegen_cost['usage']['completion_tokens'],3)
 
 if __name__=='__main__':unittest.main()

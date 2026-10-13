@@ -123,6 +123,7 @@ def replay(sessions, queries, ids, policy_factory, actor_client, judge_client, c
     report = aggregate(answers)
     search_seconds = sum(r.get('seconds',0.) for r in operations if r.get('action')=='search')
     report.update(mode='Efficient', grading_rubric='custom-engineering-v0.2-not-paper-verbatim',
+                  contract_version=config.get('contract_version','v0.2'),
                   fixture=config.get('fixture',False), scientific_result=False,
                   wall_seconds=time.perf_counter()-begin,
                   cost={'policy': costs, 'model_roles': call_cost([c for r in answers for c in r['call_log']]),

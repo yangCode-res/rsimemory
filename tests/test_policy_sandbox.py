@@ -1,7 +1,7 @@
 import sys
-import subprocess
 from pathlib import Path
 import copy
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -30,10 +30,9 @@ def search(state, query, filters):
 
 
 def worker_available():
-    """The real worker requires Linux plus libseccomp; AST checks work everywhere."""
-    import ctypes.util
-
-    return sys.platform.startswith("linux") and ctypes.util.find_library("seccomp") is not None
+    """The real worker requires the complete Linux seccomp/Landlock boundary."""
+    probe = getattr(sandbox, "isolation_available", None)
+    return bool(probe()) if callable(probe) else False
 
 
 class PlainPolicyBoundaries(unittest.TestCase):
@@ -142,130 +141,251 @@ class PlainPolicyBoundaries(unittest.TestCase):
             self.policy.read(["old"])
 
 
-class CandidateASTBoundaries(unittest.TestCase):
-    def test_minimal_candidate_has_the_documented_contract(self):
-        tree = validate_source(MINIMAL_SOURCE)
-        self.assertEqual(len(tree.body), 3)
+class CandidateSyntaxBoundaries(unittest.TestCase):
+    def test_validation_checks_syntax_without_restricting_python_dialect(self):
+        source = '''
+import math
+import datetime
+class Box:
+    def __init__(self, value=0):
+        self.value = value
+def initialize(config=None):
+    transform = lambda x: x + 1
+    try:
+        values = [transform(x) for x in range(3)]
+        return {"values": values, "stamp": datetime.datetime.now(), "box": Box()}
+    except Exception as err:
+        raise ValueError(str(err))
+def ingest(state, session):
+    return state
+def search(state, query, filters):
+    return [math.floor(x) for x in state["values"]]
+'''
+        validate_source(source)
 
-    def test_import_open_and_dynamic_escape_calls_are_rejected(self):
-        attacks = [
-            "import os\n" + MINIMAL_SOURCE,
-            MINIMAL_SOURCE.replace("state.append(session)", "open('/etc/passwd').read()\n    state.append(session)"),
-            MINIMAL_SOURCE.replace("state.append(session)", "eval('1 + 1')\n    state.append(session)"),
-            MINIMAL_SOURCE.replace("state.append(session)", "getattr(state, 'append')(session)\n    return state"),
-            MINIMAL_SOURCE.replace("state.append(session)", "state.__class__\n    state.append(session)"),
-            MINIMAL_SOURCE.replace("state.append(session)", "exec('x=1')\n    state.append(session)"),
-            MINIMAL_SOURCE.replace("def initialize(config):", "def sorted(config):\n    return []\n\ndef initialize(config):"),
-            MINIMAL_SOURCE.replace("def initialize(config):", "def initialize():"),
-        ]
-        for source in attacks:
-            with self.subTest(source=source[:60]), self.assertRaises(SandboxError):
-                validate_source(source)
-
-    def test_candidate_cannot_retrieve_method_objects(self):
-        source = MINIMAL_SOURCE.replace("state.append(session)", "method = state.append\n    state.append(session)")
+    def test_validation_rejects_only_nontext_oversized_or_invalid_syntax(self):
+        validate_source("import os\n")
         with self.assertRaises(SandboxError):
-            validate_source(source)
+            validate_source("def broken(:\n    pass\n")
+        with self.assertRaises(SandboxError):
+            validate_source(None)
+        with self.assertRaises(SandboxError):
+            validate_source("#" * (sandbox.MAX_SOURCE_BYTES + 1))
 
-    def test_fail_closed_without_linux_seccomp_worker(self):
+    def test_fail_closed_without_complete_isolation(self):
         if worker_available():
-            self.skipTest("libseccomp worker available")
-        with self.assertRaisesRegex(SandboxError, "fail-closed"):
+            self.skipTest("complete Linux sandbox is available")
+        with self.assertRaisesRegex(SandboxError, "fail-closed|isolation"):
             run_candidate(MINIMAL_SOURCE, "initialize", {"config": {}})
 
 
-@unittest.skipUnless(worker_available(), "real candidate worker requires Linux libseccomp")
+@unittest.skipUnless(worker_available(), "real candidate worker requires Linux seccomp and Landlock")
 class GeneratedPolicyWorker(unittest.TestCase):
-    def test_candidate_changes_search_and_host_checks_returned_ids(self):
-        reverse_source = MINIMAL_SOURCE.replace(
-            "for record in state:\n        sid = record[\"session_id\"]",
-            "for record in state:\n        sid = record[\"session_id\"]",
-        ).replace("return ids\n", "ids.reverse()\n    return ids\n")
-        first = GeneratedPolicy(MINIMAL_SOURCE)
-        second = GeneratedPolicy(reverse_source)
-        for policy in (first, second):
-            policy.ingest({"id": "a", "persona_id": 1, "session_id": 1, "text": "source A"})
-            policy.ingest({"id": "b", "persona_id": 1, "session_id": 2, "text": "source B"})
-        a = first.search("q", {"persona_id": 1, "checkpoint": 2})
-        b = second.search("q", {"persona_id": 1, "checkpoint": 2})
-        self.assertEqual([x["id"] for x in a], ["a", "b"])
-        self.assertEqual([x["id"] for x in b], ["b", "a"])
-        self.assertEqual(first.read(["a"])[0]["text"], "source A")
-        with self.assertRaises(PermissionError):
-            first.read(["future"])
+    def test_instance_state_keeps_module_class_identity_through_ingest_search_restore(self):
+        source = '''
+import datetime
+class Memory:
+    def __init__(self):
+        self.ids = []
+        self.seen = set()
+        self.stamp = datetime.datetime(2020, 1, 1)
+        self.selector = lambda value: value + 1
+        self.value = 0
+    def remember(self, session):
+        self.ids.append(session["id"])
+        self.seen.add(session["id"])
+        self.stamp += datetime.timedelta(days=1)
+        self.value = self.selector(self.value)
+    def results(self):
+        if self.value == len(self.seen) and self.stamp.year >= 2020:
+            return list(self.ids)
+        return []
+def initialize(config):
+    return Memory()
+def ingest(state, session):
+    if not isinstance(state, Memory):
+        raise TypeError("state lost Memory class identity")
+    state.remember(session)
+    return state
+def search(state, query, filters):
+    if not isinstance(state, Memory):
+        raise TypeError("state lost Memory class identity")
+    return state.results()
+'''
+        policy = GeneratedPolicy(source)
+        policy.ingest({"id": "one", "persona_id": 1, "session_id": 1, "text": "one"})
+        snapshot = policy.snapshot()
+        policy.ingest({"id": "two", "persona_id": 1, "session_id": 2, "text": "two"})
+        self.assertEqual([row["id"] for row in policy.search("q")], ["one", "two"])
+        policy.restore(snapshot)
+        self.assertEqual([row["id"] for row in policy.search("q")], ["one"])
 
-        attacker = MINIMAL_SOURCE.replace("return ids", "ids.append('unknown')\n    return ids")
-        restricted = GeneratedPolicy(attacker)
-        restricted.ingest({"id": "known", "session_id": 1, "text": "original"})
+    def test_normal_python_and_arbitrary_object_state_survive_operations_and_restore(self):
+        source = '''
+import datetime
+class Box:
+    def __init__(self, value=0):
+        self.value = value
+def initialize(config):
+    return {"ids": [], "seen": set(), "stamp": datetime.datetime(2020, 1, 1),
+            "box": Box(), "select": lambda value: value}
+def ingest(state, session):
+    state["ids"].append(session["id"])
+    state["seen"].add(session["id"])
+    state["stamp"] += datetime.timedelta(days=1)
+    state["box"].value += 1
+    return state
+def search(state, query, filters):
+    if (isinstance(state["stamp"], datetime.datetime) and
+            state["select"](state["box"].value) == len(state["seen"])):
+        return list(state["ids"])
+    return []
+'''
+        policy = GeneratedPolicy(source)
+        policy.ingest({"id": "one", "persona_id": 1, "session_id": 1, "text": "one"})
+        snapshot = policy.snapshot()
+        policy.ingest({"id": "two", "persona_id": 1, "session_id": 2, "text": "two"})
+        self.assertEqual([item["id"] for item in policy.search("q")], ["one", "two"])
+        policy.restore(snapshot)
+        self.assertEqual([item["id"] for item in policy.search("q")], ["one"])
+
+    def test_candidate_language_can_import_stdlib_and_use_classes_lambda_and_exceptions(self):
+        source = '''
+import math
+def initialize(config):
+    return {"values": [3.2, 2.1], "selector": lambda value: math.floor(value), "ids": []}
+def ingest(state, session):
+    try:
+        state["values"].append(float(session["value"]))
+        state["ids"].append(session["id"])
+    except (TypeError, ValueError):
+        raise ValueError("bad numeric value")
+    return state
+def search(state, query, filters):
+    try:
+        if isinstance(state["values"], list) and state["selector"](state["values"][0]) > 2:
+            return [value for value in state["ids"]]
+    except (TypeError, ValueError):
+        raise RuntimeError("candidate computation failed")
+    return []
+'''
+        policy = GeneratedPolicy(source)
+        policy.ingest({"id": "normal", "persona_id": 1, "session_id": 1,
+                       "text": "normal", "value": "4.2"})
+        self.assertEqual([row["id"] for row in policy.search("q")], ["normal"])
+
+    def test_search_mutation_isolation_and_host_id_scope(self):
+        source = '''
+def initialize(config):
+    return []
+def ingest(state, session):
+    state.append(session)
+    return state
+def search(state, query, filters):
+    state.reverse()
+    return [row["id"] for row in state]
+'''
+        policy = GeneratedPolicy(source)
+        policy.ingest({"id": "one", "persona_id": 1, "session_id": 1, "text": "one"})
+        policy.ingest({"id": "two", "persona_id": 1, "session_id": 2, "text": "two"})
+        self.assertEqual([x["id"] for x in policy.search("q")], ["two", "one"])
+        self.assertEqual([x["id"] for x in policy.search("q")], ["two", "one"])
+
+        future_source = source.replace('return [row["id"] for row in state]', 'return ["future"]')
+        future = GeneratedPolicy(future_source)
+        future.ingest({"id": "past", "persona_id": 1, "session_id": 1, "text": "past"})
+        future.ingest({"id": "future", "persona_id": 1, "session_id": 9, "text": "future"})
         with self.assertRaisesRegex(SandboxError, "unknown or out-of-scope"):
-            restricted.search("q")
+            future.search("q", {"checkpoint": 1})
 
-    def test_unknown_and_future_ids_rejected_and_top_k_host_limited(self):
-        future = MINIMAL_SOURCE.replace("return ids", "return ['future']")
-        policy = GeneratedPolicy(future, {"top_k": 1})
-        policy.ingest({"id": "old", "session_id": 1, "text": "old"})
-        policy.ingest({"id": "future", "session_id": 8, "text": "future"})
+        unknown_source = source.replace('return [row["id"] for row in state]', 'return ["unregistered"]')
+        unknown = GeneratedPolicy(unknown_source)
+        unknown.ingest({"id": "past", "persona_id": 1, "session_id": 1, "text": "past"})
         with self.assertRaisesRegex(SandboxError, "unknown or out-of-scope"):
-            policy.search("q", {"checkpoint": 1})
+            unknown.search("q")
 
-        policy = GeneratedPolicy(MINIMAL_SOURCE.replace(
-            "return ids", "ids.append('unknown')\n    return ids"), {"top_k": 1})
-        policy.ingest({"id": "known", "session_id": 1, "text": "known"})
-        with self.assertRaisesRegex(SandboxError, "unknown or out-of-scope"):
-            policy.search("q")
+    def test_missing_entrypoint_fails_at_policy_initialization(self):
+        source = '''
+def initialize(config): return {}
+def ingest(state, session): return state
+'''
+        with self.assertRaises(SandboxError):
+            GeneratedPolicy(source)
 
-        policy = GeneratedPolicy(MINIMAL_SOURCE, {"top_k": 1})
-        policy.ingest({"id": "a", "session_id": 1, "text": "a"})
-        policy.ingest({"id": "b", "session_id": 2, "text": "b"})
-        self.assertEqual([x["id"] for x in policy.search("q")], ["a"])
+    def test_snapshot_cannot_be_restored_by_different_candidate_source(self):
+        policy = GeneratedPolicy(MINIMAL_SOURCE)
+        policy.ingest({"id": "one", "persona_id": 1, "session_id": 1, "text": "one"})
+        snapshot = policy.snapshot()
+        changed = GeneratedPolicy(MINIMAL_SOURCE.replace("return []", "return {\"ids\": []}", 1))
+        with self.assertRaises((SandboxError, ValueError)):
+            changed.restore(snapshot)
 
-    def test_search_mutation_does_not_leak_between_questions(self):
-        mutating_search = MINIMAL_SOURCE.replace(
-            "ids = []\n    for record in state:",
-            "state.reverse()\n    ids = []\n    for record in state:",
-        )
-        policy = GeneratedPolicy(mutating_search)
-        policy.ingest({"id": "a", "session_id": 1, "text": "a"})
-        policy.ingest({"id": "b", "session_id": 2, "text": "b"})
-        self.assertEqual([x["id"] for x in policy.search("q")], ["b", "a"])
-        self.assertEqual([x["id"] for x in policy.search("q")], ["b", "a"])
+    def test_file_network_and_serialization_side_effects_are_blocked(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "escaped.txt"
+            file_source = f'''\ndef initialize(config):\n    try:\n        open({str(marker)!r}, "w").write("escaped")\n    except OSError:\n        return {{}}\n    raise RuntimeError("write unexpectedly succeeded")\ndef ingest(state, session): return state\ndef search(state, query, filters): return []\n'''
+            GeneratedPolicy(file_source)
+            self.assertFalse(marker.exists())
+
+            socket_source = '''
+import socket
+def initialize(config):
+    try:
+        socket.socket()
+    except OSError:
+        return {}
+    raise RuntimeError("socket unexpectedly succeeded")
+def ingest(state, session): return state
+def search(state, query, filters): return []
+'''
+            GeneratedPolicy(socket_source)
+
+            reduce_source = f'''\nclass Evil:\n    def __reduce__(self):\n        open({str(marker)!r}, "w").write("escaped")\n        return (int, (1,))\ndef initialize(config): return Evil()\ndef ingest(state, session): return state\ndef search(state, query, filters): return []\n'''
+            with self.assertRaises(SandboxError):
+                GeneratedPolicy(reduce_source)
+            self.assertFalse(marker.exists())
+
+    def test_deserialization_reduce_side_effect_runs_only_inside_worker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "unpickle-escaped.txt"
+            source = f'''\nclass Evil:\n    def __reduce__(self):\n        return (exec, ("open({str(marker)!r}, 'w').write('escaped')",))\ndef initialize(config): return Evil()\ndef ingest(state, session): return state\ndef search(state, query, filters): return []\n'''
+            policy = GeneratedPolicy(source)
+            # State is held by the host as an opaque capsule; only the worker
+            # deserializes it, under filesystem isolation.
+            self.assertFalse(marker.exists())
+            with self.assertRaises(SandboxError):
+                policy.search("q")
+            self.assertFalse(marker.exists())
+
+    def test_candidate_cannot_read_private_files_outside_runtime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            private_file = Path(temp_dir) / "private.txt"
+            private_file.write_text("private test content")
+            source = f'''\ndef initialize(config):\n    try:\n        open({str(private_file)!r}, "r").read()\n    except PermissionError:\n        return {{}}\n    raise RuntimeError("private file read unexpectedly succeeded")\ndef ingest(state, session): return state\ndef search(state, query, filters): return []\n'''
+            # Successful construction means the candidate caught the expected
+            # denial. If Landlock permits the read, initialization raises.
+            GeneratedPolicy(source)
 
     def test_wall_timeout(self):
-        slow = MINIMAL_SOURCE.replace(
-            "for record in state:\n        sid = record[\"session_id\"]",
-            "for i in range(1000000000):\n        checkpoint = i\n    for record in state:\n        sid = record[\"session_id\"]",
-        )
-        policy = GeneratedPolicy(slow, timeout_s=0.25)
-        with self.assertRaisesRegex(SandboxError, "wall-clock|CPU|process"):
+        source = '''
+def initialize(config): return {}
+def ingest(state, session): return state
+def search(state, query, filters):
+    while True:
+        pass
+'''
+        policy = GeneratedPolicy(source, timeout_s=0.25)
+        with self.assertRaises(SandboxError):
             policy.search("q")
 
-    def test_snapshot_isolation(self):
-        policy = GeneratedPolicy(MINIMAL_SOURCE)
-        policy.ingest({"id": "one", "session_id": 1, "text": "original"})
-        snap = policy.snapshot()
-        snap["state"][0]["text"] = "changed copy"
-        self.assertEqual(policy.search("q")[0]["text"], "original")
-        policy.restore(snap)
-        self.assertEqual(policy.search("q")[0]["text"], "original")
 
-
-@unittest.skipUnless(worker_available(), "seccomp probe requires Linux libseccomp")
-class SeccompOSBoundary(unittest.TestCase):
-    def test_trusted_worker_probe_blocks_open_and_socket_syscalls(self):
-        root = Path(__file__).resolve().parents[1]
-        result = subprocess.run(
-            [sys.executable, "-m", "rsi.sandbox", "--trusted-seccomp-test-probe"],
-            cwd=str(root), env={}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
-
+@unittest.skipUnless(worker_available(), "seccomp/Landlock probe requires complete Linux isolation")
+class IsolationOSBoundary(unittest.TestCase):
     def test_resource_limit_setup_failure_fails_closed(self):
         def fail_during_preexec(*args, **kwargs):
             kwargs["preexec_fn"]()
 
-        with patch.object(sandbox.sys, "platform", "linux"), \
-             patch.object(sandbox.ctypes.util, "find_library", return_value="libseccomp.so.2"), \
+        with patch.object(sandbox, "isolation_available", return_value=True), \
              patch.object(sandbox, "_limits", side_effect=RuntimeError("no limit")), \
              patch.object(sandbox.subprocess, "run", side_effect=fail_during_preexec):
             with self.assertRaisesRegex(SandboxError, "resource-limited worker"):

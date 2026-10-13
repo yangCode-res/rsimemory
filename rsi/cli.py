@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from importlib.metadata import version, PackageNotFoundError
+from urllib.error import URLError
 from .data import load_medmemory, patient_splits, representative_queries
 from .evolution import reflect, generate, new_node, backprop, pareto
 from .fixtures import FixtureClient, dataset as fixture_dataset
@@ -58,16 +60,22 @@ def main():
     p.add_argument('--no-diagnosis',action='store_true')
     p.add_argument('--semantic-model-path')
     p.add_argument('--max-interventions',type=int,default=2)
+    p.add_argument('--candidate-timeout-s',type=float,default=30.)
+    p.add_argument('--candidate-memory-mb',type=int,default=2048)
     args=p.parse_args()
     out=Path(args.output)
     if out.exists(): p.error('Use a new output directory; never overwrite runs')
     if not args.fixture and not args.dataset: p.error('--dataset is required')
-    config={'chunk_chars':1200,'chunk_overlap':120,'top_k':5,'max_steps':4,'context_chars':16000,
+    config={'contract_version':'v0.3','interface_version':'v0.3','state_serializer':'cloudpickle-base64-v1','chunk_chars':1200,'chunk_overlap':120,'top_k':5,'max_steps':4,'context_chars':16000,
             'mode':'Efficient','seed':20261013,'language':args.language,
             'fixture':args.fixture,'model':args.model,'judge_model':args.judge_model or args.model,
             'speculation':'disabled','policy_auxiliary_model':'disabled',**vars(args)}
     config['judge_model']=args.judge_model or args.model
     config['actor_max_tokens']=1024;config['optimizer_max_tokens']=3072
+    config['python_version']=sys.version.split()[0]
+    try: config['cloudpickle_version']=version('cloudpickle')
+    except PackageNotFoundError: config['cloudpickle_version']=None
+    config['worker_isolation']='Landlock-read-only-runtime + seccomp'
     try:
         repo=Path(__file__).resolve().parent.parent
         config['implementation_commit']=subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],stderr=subprocess.DEVNULL).decode().strip()
@@ -130,6 +138,7 @@ def main():
             name=f'candidate-{i+1}';node=new_node(name,'plain-bm25');node['proposal']=proposal;tree['nodes'][name]=node
             branch=out/'branches'/name;branch.mkdir(parents=True)
             dump(branch/'proposal.json',proposal)
+            stage='codegen'
             try:
                 source,cost=generate(optimizer,proposal,root_code)
                 (branch/'policy.py').write_text(source);dump(branch/'codegen-cost.json',cost)
@@ -138,10 +147,13 @@ def main():
                     raise ValueError('Duplicate generated code: '+seen_code[code_hash])
                 seen_code[code_hash]=name
                 node['commit']=commit_policy(out/'policy-git',source,name,root_commit)
-                factory=lambda source=source:GeneratedPolicy(source,config,timeout_s=5.,memory_bytes=256*1024*1024)
+                factory=lambda source=source:GeneratedPolicy(source,config,timeout_s=args.candidate_timeout_s,memory_bytes=args.candidate_memory_mb*1024*1024)
                 # Constructor verifies mandatory OS isolation before any replay.
+                stage='initialize'
                 factory()
+                stage='train'
                 t,_=replay(sessions,run_queries['train'],run_ids['train'],factory,actor_client,judge_client,config,branch/'train')
+                stage='validation'
                 v,_=replay(sessions,run_queries['validation'],run_ids['validation'],factory,actor_client,judge_client,config,branch/'validation')
                 node['status']='evaluated' if t['AVG'] is not None and v['AVG'] is not None else 'incomplete_scoring'
                 node['train_AVG']=t['AVG'];node['validation_AVG']=v['AVG']
@@ -154,11 +166,14 @@ def main():
                     dump(branch/'codegen-cost.json',exc.codegen_cost)
                     node['commit']=commit_policy(out/'policy-git',exc.candidate_source,name,root_commit)
                 node['status']='invalid';node['failure']=f'{type(exc).__name__}: {exc}'
-                dump(branch/'failure.json',{'reason':node['failure']})
+                node['failure_category']=getattr(exc,'category','environment' if isinstance(exc,URLError) else 'contract' if stage=='codegen' else 'runtime')
+                node['failure_stage']=stage
+                dump(branch/'failure.json',{'reason':node['failure'],'category':node['failure_category'],
+                                           'stage':stage,'policy_cost':getattr(exc,'policy_cost',None)})
             dump(out/'tree.json',tree)
             branches.append(node)
     dump(out/'tree.json',tree)
-    summary={'fixture':args.fixture,'scientific_result':False if args.fixture else 'engineering rubric; uncalibrated',
+    summary={'contract_version':config['contract_version'],'fixture':args.fixture,'scientific_result':False if args.fixture else 'engineering rubric; uncalibrated',
              'comparison':comparisons,'pareto':pareto(comparisons),'branches':branches,
              'semantic':semantic,'cost':{'optimizer':call_cost(optimizer.calls),
                                        'intervention':call_cost([c for r in (interventions if args.evolve else []) for c in r['call_log']])},

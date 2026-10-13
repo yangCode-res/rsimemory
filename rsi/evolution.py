@@ -80,21 +80,21 @@ def reflect(client, answers, query_lookup, interventions, parent_code, with_diag
 
 
 def generate(client, proposal, parent_code):
-    instruction = '''Produce a standalone restricted Python memory policy. Return JSON {"code":"..."}.
-Exactly three entry functions: initialize(config), ingest(state,session), search(state,query,filters).
-Input session is a chunk with id,text,session_id,persona_id. search returns original registered IDs, at most 5.
-JSON state can organize, merge, prune and index data. No answering, no reference answers, no external state.
-Syntax: functions, assignments, if, for, return, expressions, lists, dicts, sets. NO imports, classes, lambdas,
-comprehensions, decorators, annotations, try, while, global, underscore names, files, network, reflection.
-Allowed builtins: sorted,len,min,max,sum,range,set,list,dict,str,int,float,bool,enumerate,zip,abs,round.
-Allowed methods: lower,strip,split,join,replace,startswith,endswith,find,count,casefold,append,extend,insert,
-pop,remove,reverse,sort,copy,index,get,keys,values,items,update,setdefault. Helper functions are allowed.
-Use only passed config/state/session/query/filters. Each function must have explicit arguments without defaults.
-All function and variable names must start with a Latin letter, NEVER an underscore. Use tokens, rank, helper;
-never _tokens, _rank, __init__, _ or self. JSON keys such as session_id are allowed.
-The parent is trusted host class code in a DIFFERENT dialect. Do not copy its class methods as functions.
-Rewrite the algorithm as these three JSON-state entry functions using the supplied legal starter.
-Prefer simple loop-based code. Do not include scores, patient-specific constants, or evaluation questions.'''
+    instruction = '''Produce a standalone normal Python memory-policy module. Return JSON {"code":"..."}.
+Provide callable initialize(config), ingest(state,session), search(state,query,filters).
+Normal Python classes, helpers, lambdas, annotations, exceptions, comprehensions, decorators, default
+arguments, standard builtins, and imports of installed libraries are supported. No syntax/name whitelist.
+State may be a custom class or any object that cloudpickle can snapshot. Host handles opaque snapshots;
+do not add a serializable declaration or convert your state to JSON. Host snapshots your state and policy
+module together. Each search restores an independent snapshot, including policy-module globals; its
+mutations are discarded. Only ingest advances persistent memory. External module/process state is not
+automatically persisted. Session is a raw chunk with id,text,session_id,persona_id.
+Search must return registered raw IDs (at most 5), within the patient/checkpoint filters.
+Filesystem access is read-only and limited to installed runtime libraries; no private dataset files,
+network or process control. Use passed historical records as data. Do not modify the actor/evaluator,
+produce answers, or embed reference answers, patient-specific constants, or evaluation questions.
+The trusted parent is baseline host code; implement the same three public entrypoints with your own design.'''
+
     response = client.complete([{'role':'system','content':instruction},
                                 {'role':'user','content':json.dumps({'proposal':proposal,'parent_code':parent_code,
                                                                    'legal_starter':PARENT_CODE},ensure_ascii=False)}],

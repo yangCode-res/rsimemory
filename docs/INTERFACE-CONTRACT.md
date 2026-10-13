@@ -1,5 +1,7 @@
 # Memory Policy Interface Contract
 
+当前 v0.3 工程实现与验证见 [VALIDATION-v0.3](VALIDATION-v0.3.md)；历史 v0.2 记录保持原样。
+
 版本：0.3　日期：2026年10月13日　状态：对象快照协议升级；v0.3 实现与运行验证另行记录，正式参数待冻结。
 
 本契约依据 `docs/architecture-v0.2.png` 定义固定执行器与候选 memory policy 的边界，以及固定 ReAct 模型可调用的只读工具。该图已确认为 target architecture：在线运行、固定评测/反馈、离线进化和红色有效性约束都属于目标结构。本文区分目标协议和首轮实现限制，不表示安全沙箱或全部接口已实现或验证。

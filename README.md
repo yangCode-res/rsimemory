@@ -2,7 +2,7 @@
 
 目标架构见 [PRD（当前接口协议 v0.3）](docs/PRD-v0.2.md)、[接口契约 v0.3](docs/INTERFACE-CONTRACT.md) 和 [架构图](docs/architecture-v0.2.png)。
 
-接口契约已升级到 v0.3：policy state 现在是由隔离 worker 恢复和序列化的 cloudpickle 对象快照，宿主只保存 base64 不透明快照。v0.3 的新运行须用新的 run ID 与版本记录留档，不覆盖 v0.2 的 `VALIDATION` 或 `RUNTIME` 记录。本文档更新本身不表示 v0.3 执行链路已实现或验证。
+接口契约已升级到 v0.3：policy state 现在是由隔离 worker 恢复和序列化的 cloudpickle 对象快照，宿主只保存 base64 不透明快照。v0.3 的新运行须用新的 run ID 与版本记录留档，不覆盖 v0.2 的 `VALIDATION` 或 `RUNTIME` 记录。v0.3 对象快照与只读查询已实现，验收见 [v0.3 验收记录](docs/VALIDATION-v0.3.md)；当前运行环境见 [RUNTIME v0.3](docs/RUNTIME-v0.3.md)。
 
 [运行环境](docs/RUNTIME-v0.2.md)与[工程验收记录](docs/VALIDATION-v0.2.md)已留档：真实基线与反思已验证；当前真实生成的三个代码候选被契约检查拒绝，尚无成功进化策略。合成候选闭环已通过。
 
@@ -36,7 +36,7 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 - BM25 与可选的本地语义检索使用相同原文切分；语义模型未提供则 skipped，缺依赖明确失败。
 - 候选通过普通 Python 入口管理任意 state 对象，可使用已安装依赖、类、lambda、异常处理和推导式。候选 state 不要求声明可序列化；宿主在实际快照时用 cloudpickle 尝试，失败就是该运行的错误。当前 `search` 仍只返回已登记的原文 ID；派生文本输出需另行设计 lineage 与记录 schema。
 - `search` 对每次查询从同一检查点快照恢复独立副本，任何副本内变更均不持久化；只有 `ingest` 推进宿主保存的快照。ReAct 的 search/read 协议、原文 ID 范围及答案和未来信息隔离保持冻结。
-- v0.3 的候选运行目标为 Linux 独立 worker：Landlock 只允许读取 Python runtime，阻止读取私有数据文件和所有文件写入；seccomp 限制网络与进程控制等系统调用。失败时 fail closed；不声称这是通用安全审计或完整多租户安全保证。新沙箱与快照恢复行为须单独实现和验证后才能用于新 run。
+- v0.3 的候选运行目标为 Linux 独立 worker：Landlock 只允许读取 Python runtime，阻止读取私有数据文件和所有文件写入；seccomp 限制网络与进程控制等系统调用。失败时 fail closed；不声称这是通用安全审计或完整多租户安全保证。Linux 运行测试已验证上述边界；这不替代通用安全审计。
 - 初版根节点只展开一次；无诊断对照随后通过 --no-diagnosis 独立补跑。
 - 当前上下文采用字符限额，精确 tokenizer 预算待接。fixture 的模拟模型和 judge 只验证协议，不是科学成绩。
 - Reflexion 输入采用完整父版本代码与受限诊断摘录，工程上限 24000 字符；截断显式标记。调用失败写入 reflexion-failure.json，训练或验证评分不完整的版本不参加 Pareto 或训练收益回传。

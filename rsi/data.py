@@ -24,6 +24,11 @@ def patient_splits(ids, seed=20261013):
 
 def normalize_query(row):
     q = dict(row)
+    # Dataset query_id is local to each patient, not globally unique. Offline
+    # diagnostics must never look up another patient's reference by that ID.
+    if all(key in q for key in ('persona_id', 'session_id', 'query_id')):
+        q['source_query_id'] = q['query_id']
+        q['query_id'] = f'p{q["persona_id"]}-s{q["session_id"]}-q{q["source_query_id"]}'
     def decode(value, default):
         if isinstance(value, str):
             try: return json.loads(value)
@@ -80,7 +85,10 @@ def load_medmemory(root, language='zh', mode='Efficient'):
         turns = group.sort_values('turn', kind='stable')
         sessions.append({'persona_id': int(pid), 'session_id': int(sid),
                          'text': '\n'.join(str(r.role)+': '+str(r.content) for r in turns.itertuples())})
-    return sessions, [normalize_query(q) for q in questions.to_dict('records')]
+    queries = [normalize_query(q) for q in questions.to_dict('records')]
+    if len({q['query_id'] for q in queries}) != len(queries):
+        raise ValueError('Duplicate composite query identifiers')
+    return sessions, queries
 
 
 def chunk_session(session, size=1200, overlap=120):

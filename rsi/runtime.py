@@ -16,11 +16,13 @@ def dump(path, value):
 
 
 class HostTools:
-    def __init__(self, policy, persona_id, checkpoint, top_k=5, context_chars=16000):
+    def __init__(self, policy, persona_id, checkpoint, top_k=5, context_chars=16000,
+                 on_operation=None):
         self.policy = copy.deepcopy(policy)
         self.persona_id, self.checkpoint = persona_id, checkpoint
         self.top_k, self.context_chars = top_k, context_chars
         self.audit = []
+        self.on_operation = on_operation
         self.visible = {}
         self.registry = copy.deepcopy(getattr(policy, '_registry', getattr(policy, '_by_id', {})))
 
@@ -36,8 +38,8 @@ class HostTools:
             if original is None or original['persona_id'] != self.persona_id or original['session_id'] > self.checkpoint:
                 raise PermissionError('Unregistered or future evidence')
             self.visible[r['id']] = original
-        self.audit.append({'action': 'search', 'seconds': time.perf_counter()-start,
-                           'ids': [r['id'] for r in rows]})
+        self._record({'action': 'search', 'seconds': time.perf_counter()-start,
+                      'ids': [r['id'] for r in rows]})
         return [{'id': r['id'], 'text': self.visible[r['id']]['text'][:450],
                  'session_id': self.visible[r['id']]['session_id']} for r in rows]
 
@@ -50,8 +52,13 @@ class HostTools:
         for cid in ids:
             r = self.visible[cid]; text = r['text'][:budget]; budget -= len(text)
             result.append({'id': cid, 'text': text, 'session_id': r['session_id']})
-        self.audit.append({'action': 'read', 'ids': list(ids), 'bytes': sum(len(r['text'].encode()) for r in result)})
+        self._record({'action': 'read', 'ids': list(ids), 'bytes': sum(len(r['text'].encode()) for r in result)})
         return result
+
+    def _record(self, operation):
+        self.audit.append(operation)
+        if self.on_operation is not None:
+            self.on_operation(operation)
 
 
 class InterventionTools:
@@ -89,49 +96,96 @@ def replay(sessions, queries, ids, policy_factory, actor_client, judge_client, c
     out = Path(output); out.mkdir(parents=True, exist_ok=False)
     answers, operations, costs = [], [], []
     begin = time.perf_counter()
-    for pid in ids:
-        policy = policy_factory()
-        pending = {}
-        for q in queries:
-            if q['persona_id'] == pid: pending.setdefault(q['session_id'], []).append(q)
-        for session in sessions:
-            if session['persona_id'] != pid: continue
-            if not pending or session['session_id'] > max(pending): break
-            for chunk in chunk_session(session, config['chunk_chars'], config['chunk_overlap']):
-                start = time.perf_counter(); policy.ingest(chunk)
-                operations.append({'event': 'ingest', 'persona_id': pid, 'session_id': session['session_id'],
-                                   'memory_id': chunk['id'], 'seconds': time.perf_counter()-start})
-            for q in pending.get(session['session_id'], []):
-                actor = Actor(actor_client, config['max_steps'], config['context_chars'])
-                tools = HostTools(policy, pid, session['session_id'], config['top_k'], config['context_chars'])
-                response = actor.answer(q['question'], tools)
-                if response['status'] not in ('completed', 'forced_final'):
-                    grade = {'score': None, 'status': 'actor_failed', 'reason': response['status'], 'call_log': []}
-                else:
-                    grade = evaluate(q, response['answer'], judge_client)
-                answers.append({'persona_id': pid, 'query_id': q['query_id'], 'session_id': q['session_id'],
-                                'query_type': q['query_type'], 'question': q['question'],
-                                'answer': response['answer'], 'actor_status': response['status'],
-                                'trajectory': response['trajectory'], 'evidence': response['evidence'],
-                                'tool_audit': tools.audit, 'score': grade['score'], 'status': grade['status'],
-                                'reason': grade['reason'], 'call_log': response['call_log']+grade['call_log']})
-                operations.extend({'event': 'tool', 'query_id': q['query_id'], **r} for r in tools.audit)
-        costs.append(dict(policy.cost))
-    for name, rows in [('answers', answers), ('operations', operations)]:
-        with (out/(name+'.jsonl')).open('w') as f:
-            for row in rows: f.write(json.dumps(row, ensure_ascii=False)+'\n')
-    report = aggregate(answers)
-    search_seconds = sum(r.get('seconds',0.) for r in operations if r.get('action')=='search')
-    report.update(mode='Efficient', grading_rubric='custom-engineering-v0.2-not-paper-verbatim',
-                  contract_version=config.get('contract_version','v0.2'),
-                  fixture=config.get('fixture',False), scientific_result=False,
-                  wall_seconds=time.perf_counter()-begin,
-                  cost={'policy': costs, 'model_roles': call_cost([c for r in answers for c in r['call_log']]),
-                        'search_seconds': search_seconds,
-                        'policy_auxiliary_model': {'status': 'disabled'}},
-                  fixed_prompt_sha256=hashlib.sha256(ACTOR_SYSTEM_PROMPT.encode()).hexdigest())
-    dump(out/'report.json', report)
-    return report, answers
+    answer_path, operation_path = out/'answers.jsonl', out/'operations.jsonl'
+    progress_path = out/'progress.json'
+    ids = list(ids)
+    id_set = set(ids)
+    total_questions = sum(1 for q in queries if q['persona_id'] in id_set)
+    progress = {'status': 'running', 'total_questions': total_questions,
+                'completed': 0, 'scored': 0, 'abnormal': 0}
+
+    def save_progress(status=None):
+        if status is not None:
+            progress['status'] = status
+        dump(progress_path, progress)
+
+    def append_jsonl(file, row):
+        file.write(json.dumps(row, ensure_ascii=False, separators=(',', ':'))+'\n')
+        file.flush()
+
+    save_progress()
+    active_query = False
+    try:
+        with answer_path.open('w', encoding='utf-8') as answer_file, \
+                operation_path.open('w', encoding='utf-8') as operation_file:
+            for pid in ids:
+                policy = policy_factory()
+                pending = {}
+                for q in queries:
+                    if q['persona_id'] == pid: pending.setdefault(q['session_id'], []).append(q)
+                for session in sessions:
+                    if session['persona_id'] != pid: continue
+                    if not pending or session['session_id'] > max(pending): break
+                    for chunk in chunk_session(session, config['chunk_chars'], config['chunk_overlap']):
+                        start = time.perf_counter(); policy.ingest(chunk)
+                        operation = {'event': 'ingest', 'persona_id': pid, 'session_id': session['session_id'],
+                                     'memory_id': chunk['id'], 'seconds': time.perf_counter()-start}
+                        operations.append(operation)
+                        append_jsonl(operation_file, operation)
+                    for q in pending.get(session['session_id'], []):
+                        active_query = True
+
+                        def persist_tool_operation(row, query_id=q['query_id']):
+                            operation = {'event': 'tool', 'query_id': query_id, **row}
+                            operations.append(operation)
+                            append_jsonl(operation_file, operation)
+
+                        actor = Actor(actor_client, config['max_steps'], config['context_chars'])
+                        tools = HostTools(policy, pid, session['session_id'], config['top_k'],
+                                          config['context_chars'], on_operation=persist_tool_operation)
+                        response = actor.answer(q['question'], tools)
+                        if response['status'] not in ('completed', 'forced_final'):
+                            grade = {'score': None, 'status': 'actor_failed', 'reason': response['status'], 'call_log': []}
+                        else:
+                            grade = evaluate(q, response['answer'], judge_client)
+                        row = {'persona_id': pid, 'query_id': q['query_id'], 'session_id': q['session_id'],
+                               'query_type': q['query_type'], 'question': q['question'],
+                               'answer': response['answer'], 'actor_status': response['status'],
+                               'trajectory': response['trajectory'], 'evidence': response['evidence'],
+                               'tool_audit': tools.audit, 'score': grade['score'], 'status': grade['status'],
+                               'reason': grade['reason'], 'call_log': response['call_log']+grade['call_log']}
+                        answers.append(row)
+                        append_jsonl(answer_file, row)
+                        progress['completed'] += 1
+                        if type(grade['score']) is int and grade['score'] in (0, 1):
+                            progress['scored'] += 1
+                        else:
+                            progress['abnormal'] += 1
+                        active_query = False
+                        save_progress()
+                costs.append(dict(policy.cost))
+    except BaseException:
+        if active_query:
+            progress['abnormal'] += 1
+        save_progress('failed')
+        raise
+    try:
+        report = aggregate(answers)
+        search_seconds = sum(r.get('seconds',0.) for r in operations if r.get('action')=='search')
+        report.update(mode='Efficient', grading_rubric='custom-engineering-v0.2-not-paper-verbatim',
+                      contract_version=config.get('contract_version','v0.2'),
+                      fixture=config.get('fixture',False), scientific_result=False,
+                      wall_seconds=time.perf_counter()-begin,
+                      cost={'policy': costs, 'model_roles': call_cost([c for r in answers for c in r['call_log']]),
+                            'search_seconds': search_seconds,
+                            'policy_auxiliary_model': {'status': 'disabled'}},
+                      fixed_prompt_sha256=hashlib.sha256(ACTOR_SYSTEM_PROMPT.encode()).hexdigest())
+        dump(out/'report.json', report)
+        save_progress('completed')
+        return report, answers
+    except BaseException:
+        save_progress('failed')
+        raise
 
 
 def intervention(answers, query_lookup, client, judge_client, sessions, max_cases=2):

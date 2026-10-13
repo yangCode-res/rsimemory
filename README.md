@@ -43,3 +43,5 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 - v0.3 的 cloudpickle 恢复不得发生在宿主编排进程；仅可在隔离 worker 完成 Landlock/seccomp 限制后进行。无法恢复或重新快照的对象按运行错误归档，不作兼容性假设。
 
 当前真实数据划分为训练 8 位、验证 4 位、测试 8 位，seed=20261013；原验证患者保持不变。完整记录见 [数据划分 v2](docs/DATA-SPLIT-v2.md)，历史运行保持原样。
+
+全量首轮使用 `sbatch scripts/full_round.sbatch`，流程、逐题进度留档与唯一题号修复见 [全量运行记录](docs/FULL-ROUND-v0.3.md)。

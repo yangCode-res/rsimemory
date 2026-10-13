@@ -10,6 +10,16 @@ from rsi.policy import PlainPolicy
 from rsi.runtime import HostTools, replay, InterventionTools
 
 class PipelineIntegration(unittest.TestCase):
+    def test_query_identifiers_do_not_cross_patients_or_checkpoints(self):
+        rows = [normalize_query({'persona_id':pid, 'session_id':sid, 'query_id':7,
+                                 'question':'synthetic', 'answers':'[]'})
+                for pid,sid in ((1,10),(2,10),(1,20))]
+        lookup = {q['query_id']:q for q in rows}
+        self.assertEqual(len(lookup),3)
+        self.assertTrue(all(q['source_query_id']==7 for q in rows))
+        for q in rows:
+            self.assertIs(lookup[q['query_id']],q)
+
     def test_twenty_patient_split_is_8_4_8_and_preserves_validation(self):
         ids=list(range(1,21));seed=20261013
         ordered=sorted(ids,key=lambda x:hashlib.sha256(f'{seed}:{x}'.encode()).hexdigest())

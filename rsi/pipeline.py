@@ -175,4 +175,5 @@ def main():
                       'smoke': args.smoke}, ensure_ascii=False))
 
 if __name__ == '__main__':
-    main()
+    from .cli import main as v02_main
+    v02_main()

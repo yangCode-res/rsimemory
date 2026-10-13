@@ -1,0 +1,43 @@
+flowchart TB
+    subgraph ONLINE[在线运行 每个 policy 版本独立从头 replay]
+        H[外部患者会话流] --> X[固定执行器 时间与患者权限控制]
+        X -->|ingest 新会话| P[Memory policy 可进化代码\n表示 写入 合并 更新 删除 检索]
+        P <--> M[(派生记忆与索引)]
+        X --> S[检查点记忆快照\n每道题恢复同一状态]
+        S --> P
+        Q[问题文本\n无题型 答案 来源标注] --> A[冻结 ReAct\n模型 Prompt 工具协议与步数上限]
+        A -->|search 信息需求 / read 记忆 ID| P
+        P -->|证据 来源 时间| A
+        A --> AN[最终答案与可观察工具轨迹]
+    end
+    subgraph FEEDBACK[固定评测与观测层]
+        G[标准答案与证据标注\n仅评测侧可见] --> E[独立评分器]
+        AN --> E
+        P --> L[记忆操作日志\n检索证据 Token 耗时 存储]
+        E --> R[六类准确率与 AVG\n训练 验证分别报告]
+        L --> R
+    end
+    subgraph EVOLUTION[离线进化 训练诊断与验证选择分离]
+        E -->|训练逐题结果| D[诊断数据包\n失败与成功对照]
+        L -->|训练操作日志| D
+        D --> I[定向干预 replay\n补证据 替换证据 检验归因]
+        D --> F[Reflexion\n聚类 归因 不确定性]
+        I --> F
+        F --> C[三个修改假设\n生成三个子 policy 代码]
+        C --> B[边界检查与隔离执行\n只允许修改 memory policy]
+        B -->|违规或运行失败| FAIL[失败节点与原因归档]
+        B -->|有效候选| V[版本树与实验编排\nMCTS / UCT 训练收益回传]
+        R -->|训练收益 / 验证汇总与成本| V
+        FAIL --> V
+        V --> K[Pareto 候选集合\n不强制唯一胜者]
+    end
+    V -.->|选定版本 全新状态 replay| X
+    T[测试集封存\n最终版本冻结后使用]
+    classDef frozen fill:#e8eef7,stroke:#476488,color:#142c48;
+    classDef mutable fill:#e4f4e9,stroke:#398153,color:#153b23;
+    classDef offline fill:#fff2da,stroke:#ba8429,color:#5f4010;
+    classDef restricted fill:#f9e8e8,stroke:#ae5252,color:#642626;
+    class X,S,A,E,G frozen;
+    class P,M mutable;
+    class D,I,F,C,V,K offline;
+    class B,FAIL,T restricted;

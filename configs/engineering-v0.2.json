@@ -1,0 +1,21 @@
+{
+  "status": "provisional engineering configuration",
+  "mode": "Efficient",
+  "language": "zh",
+  "split_seed": 20261013,
+  "chunk_chars": 1200,
+  "chunk_overlap": 120,
+  "top_k": 5,
+  "react_steps": 4,
+  "context_chars": 16000,
+  "actor_model": "qwen3.8-27b",
+  "judge_model": "qwen3.8-27b",
+  "judge_rubric": "custom-engineering-v0.2-not-paper-verbatim",
+  "speculative_decoding": false,
+  "policy_auxiliary_model": "disabled",
+  "semantic_model": null,
+  "candidate_count": 3,
+  "search_expansions": 1,
+  "no_diagnosis_control": "planned subsequent run",
+  "test_evaluation": false
+}

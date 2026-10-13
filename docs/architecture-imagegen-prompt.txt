@@ -1,0 +1,34 @@
+Use case: infographic-diagram. Generate a crisp, publication-quality raster system architecture diagram for a Chinese research project, landscape 16:10, high resolution, white background, restrained flat vector-like boxes (but output a bitmap). Clear modern sans-serif typography, Chinese text perfectly readable, tidy alignment, generous whitespace, arrows with labels and no overlapping connectors. Title verbatim: "RSI 记忆管理系统架构". Subtitle: "目标架构 · 冻结求解链路 · 开放记忆策略进化". This is an architecture specification, not a claim of implementation.
+
+Three horizontal bands top to bottom.
+
+TOP band labeled "① 在线运行". Blue means frozen, green means evolvable.
+At far left two small sources: "历史会话" and "评测问题". Historical source flows via a blue box "固定执行器" with subtext "患者权限 · 时间边界" into the green central box "Memory Policy" with subtext "表示 · 写入 · 合并 · 更新 · 删除 · 检索". Label that arrow "ingest".
+Below Memory Policy a green cylinder "派生记忆与索引" with bidirectional connector.
+Right side a blue box "冻结 ReAct" with subtext "模型 · Prompt · 工具协议". Problem source flows to this ReAct box, NOT to the ingestion path.
+Between ReAct and Memory Policy draw two clean opposite arrows: ReAct to policy labeled "search / read"; policy to ReAct labeled "证据 · 来源 · 时间".
+ReAct flows to a small blue box "答案与工具轨迹".
+Include small top-band footnote "每道题从同一检查点快照开始；评测问题与答案不写入患者记忆".
+No CRUD arrow from ReAct. Online policy cannot access reference answers.
+
+MIDDLE band labeled "② 固定评测与反馈".
+Show "操作与检索日志" (receives a downward arrow from policy), "独立评分器" (receives downward arrow from answers), and "性能与成本" (receives arrows from logs and scorer).
+Scorer has its own small input box "标准答案 / 证据标注" explicitly tagged "仅离线可见".
+Performance box subtext "六类准确率 · AVG · Token · 耗时 · 存储".
+Right edge small lock-marked "测试集封存". It has no arrow into optimization.
+Downward training-only arrow from logs/scorer to bottom diagnosis. Downward validation-summary arrow from performance box to bottom selection labeled "验证汇总".
+
+BOTTOM band labeled "③ 离线进化".
+Amber boxes laid out left to right:
+"Reflexion" subtext "成功 / 失败对照\n聚类 · 归因 · 不确定性";
+a smaller box underneath Reflexion "定向干预 Replay" subtext "检验归因", arrows diagnosis to intervention and intervention back to diagnosis.
+Then "三个修改假设" with subtext "生成子 Policy 代码";
+then a red-border box "边界检查与隔离";
+then "版本树 / MCTS + UCT" with subtext "训练收益回传";
+then "候选比较" with subtext "AVG 与成本 · Pareto 集合".
+Reflexion to hypotheses to boundary check to version tree to candidate comparison as clear arrows. Boundary check also points down to a small "失败归档" box tagged "违规 / 运行失败".
+Draw one large dashed feedback connector along the outside margin from version tree up to fixed executor, labeled "候选从头 Replay". This denotes isolated rollout of each candidate, not modification to the frozen agent.
+Tiny footer notes "初版：根版本展开一次，生成 3 个子版本" and legend "蓝：冻结组件   绿：可进化记忆   橙：离线进化   红：有效性约束".
+Faithful flow and legible labels are more important than decorative elements. Avoid mascots, 3D, shadows, neon, microscopic text, invented metrics, Mermaid code, or superfluous arrows. Keep text in boxes minimal and correct.
+
+Final corrections: validation summary connects to candidate comparison only; train AVG connects to UCT; the dashed replay loop points only to the executor; log input connects from memory storage. Generated with built-in image_gen, then edited for connector accuracy.

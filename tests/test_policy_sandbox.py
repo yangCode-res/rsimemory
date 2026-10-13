@@ -76,7 +76,7 @@ class PlainPolicyBoundaries(unittest.TestCase):
                 return iter(self.values)
 
         class LocalEncoder:
-            def encode(self, texts, normalize_embeddings=True):
+            def encode(self, texts, batch_size=32, normalize_embeddings=True):
                 # Deliberately prefer the second text, which has no query bigrams.
                 return [Vector([1, 0]), Vector([0, 1]), Vector([1, 0])]
 
@@ -91,7 +91,7 @@ class PlainPolicyBoundaries(unittest.TestCase):
         class CountingEncoder:
             def __init__(self):
                 self.calls = []
-            def encode(self, texts, normalize_embeddings=True):
+            def encode(self, texts, batch_size=32, normalize_embeddings=True):
                 self.calls.append(list(texts))
                 return [[1.0, 0.0] for _ in texts]
 

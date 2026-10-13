@@ -110,7 +110,9 @@ def main():
         try:
             st,_=replay(sessions,run_queries['train'],run_ids['train'],lambda:PlainPolicy(sc),actor_client,judge_client,sc,out/'plain-semantic'/'train')
             sv,_=replay(sessions,run_queries['validation'],run_ids['validation'],lambda:PlainPolicy(sc),actor_client,judge_client,sc,out/'plain-semantic'/'validation')
-            comparisons['plain-semantic']=comparison_metric(sv);semantic={'status':'evaluated'}
+            comparisons['plain-semantic']=comparison_metric(sv)
+            semantic={'status':'evaluated' if st['AVG'] is not None and sv['AVG'] is not None else 'incomplete_scoring'}
+            comparisons['plain-semantic']['valid']=semantic['status']=='evaluated'
         except Exception as exc: semantic={'status':'failed','reason':str(exc)}
     dump(out/'semantic-status.json',semantic)
     lookup={q['query_id']:q for q in run_queries['train']}
@@ -118,8 +120,12 @@ def main():
     if args.evolve:
         interventions=intervention(train_rows,lookup,actor_client,judge_client,sessions,args.max_interventions) if args.max_interventions>0 else []
         dump(out/'interventions.json',interventions)
-        diagnosis=reflect(optimizer,train_rows,lookup,interventions,root_code,not args.no_diagnosis)
-        dump(out/'reflexion.json',diagnosis)
+        try:
+            diagnosis=reflect(optimizer,train_rows,lookup,interventions,root_code,not args.no_diagnosis)
+            dump(out/'reflexion.json',diagnosis)
+        except Exception as exc:
+            diagnosis={'proposals': [], 'status':'failed'}
+            dump(out/'reflexion-failure.json',{'reason':f'{type(exc).__name__}: {exc}'})
         for i,proposal in enumerate(diagnosis['proposals']):
             name=f'candidate-{i+1}';node=new_node(name,'plain-bm25');node['proposal']=proposal;tree['nodes'][name]=node
             branch=out/'branches'/name;branch.mkdir(parents=True)
@@ -139,7 +145,9 @@ def main():
                 v,_=replay(sessions,run_queries['validation'],run_ids['validation'],factory,actor_client,judge_client,config,branch/'validation')
                 node['status']='evaluated' if t['AVG'] is not None and v['AVG'] is not None else 'incomplete_scoring'
                 node['train_AVG']=t['AVG'];node['validation_AVG']=v['AVG']
-                backprop(tree,name,t['AVG']);comparisons[name]=comparison_metric(v)
+                if node['status']=='evaluated': backprop(tree,name,t['AVG'])
+                comparisons[name]=comparison_metric(v)
+                comparisons[name]['valid']=node['status']=='evaluated'
             except Exception as exc:
                 node['status']='invalid';node['failure']=f'{type(exc).__name__}: {exc}'
                 dump(branch/'failure.json',{'reason':node['failure']})

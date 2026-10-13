@@ -160,7 +160,7 @@ class Actor:
             # A final-only model turn is reserved for budget exhaustion, and is
             # explicitly visible in the trajectory rather than silently scored.
             fallback_messages = self._bounded_messages(messages + [
-                {"role": "system", "content":
+                {"role": "user", "content":
                  "The tool/action budget is exhausted. Return only a JSON object "
                  "{\"action\":\"final\",\"answer\":\"...\"}; do not call tools."}
             ])

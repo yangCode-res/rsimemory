@@ -12,9 +12,11 @@ class FakeClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.roles = []
+        self.message_calls = []
 
     def complete(self, messages, role="actor", json_mode=False):
         self.roles.append((role, json_mode))
+        self.message_calls.append(list(messages))
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -80,6 +82,10 @@ class ActorEvaluationTests(unittest.TestCase):
         result = Actor(client, max_steps=1).answer("Question", ReadOnlyTools())
         self.assertEqual(result["status"], "forced_final")
         self.assertEqual(result["trajectory"][-1]["action"], "forced_final")
+        final_messages = client.message_calls[-1]
+        system_positions = [i for i, message in enumerate(final_messages)
+                            if message["role"] == "system"]
+        self.assertEqual(system_positions, [0])
 
     def test_invalid_judge_output_is_null_and_cost_is_logged(self):
         client = FakeClient(['{"score":true,"reason":"invalid boolean"}'])

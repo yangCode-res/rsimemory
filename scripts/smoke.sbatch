@@ -15,9 +15,9 @@ cd "$ROOT"
 PY="$SGL/venv/bin/python"
 [[ ! -x "$ROOT/.venv/bin/python" ]] || PY="$ROOT/.venv/bin/python"
 export PORT=7861 HOST=127.0.0.1 TP_SIZE=2
-"$SGL/launch.sh" > "$ROOT/runs/server-$SLURM_JOB_ID.log" 2>&1 &
+setsid "$SGL/launch.sh" > "$ROOT/runs/server-$SLURM_JOB_ID.log" 2>&1 &
 PID=$!
-trap 'kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true' EXIT
+trap 'kill -TERM -- "-$PID" 2>/dev/null || true; sleep 2; kill -KILL -- "-$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true' EXIT
 ready=0
 for ((i=0;i<120;i++)); do
   kill -0 "$PID" 2>/dev/null || { echo SERVER_FAILED; exit 1; }

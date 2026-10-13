@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from rsi.data import chunk_session, normalize_query, patient_splits
-from rsi.evolution import new_node, backprop, uct, pareto
+from rsi.evolution import new_node, backprop, uct, pareto, reflect
 from rsi.fixtures import FixtureClient, dataset
 from rsi.policy import PlainPolicy
 from rsi.runtime import HostTools, replay, InterventionTools
@@ -65,5 +65,22 @@ class PipelineIntegration(unittest.TestCase):
                  'dominated':{'AVG':.4,'policy_tokens':1,'policy_seconds':2,'policy_bytes':20},
                  'failed':{'AVG':None}}
         self.assertEqual(set(pareto(reports)),{'cheap','accurate'})
+
+    def test_reflection_bounds_diagnostics_and_keeps_json(self):
+        class CaptureClient(FixtureClient):
+            def complete(self,messages,**kwargs):
+                self.messages=messages
+                return super().complete(messages,**kwargs)
+        client=CaptureClient()
+        rows=[{'query_id':str(i),'query_type':'state_update','question':'问'*20000,
+               'answer':'答'*20000,'score':i%2,'reason':'证'*20000,
+               'evidence':[{'text':'记'*20000}]*20,'trajectory':[]} for i in range(8)]
+        lookup={str(i):{'positive_answers':['金'*20000],'evidence':[]} for i in range(8)}
+        result=reflect(client,rows,lookup,[],'baseline'*1200)
+        payload=json.loads(client.messages[1]['content'])
+        self.assertLessEqual(result['input_chars'],24000)
+        self.assertEqual(payload['parent_code'],'baseline'*1200)
+        self.assertTrue(payload['diagnostic_excerpts'])
+        self.assertTrue(payload['examples'])
 
 if __name__=='__main__':unittest.main()

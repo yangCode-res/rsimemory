@@ -7,6 +7,17 @@ import math
 from .sandbox import validate_source
 
 
+def compact_example(value, text_limit=500):
+    """Bound diagnostic excerpts without producing broken JSON or hidden data."""
+    if isinstance(value, str):
+        return value if len(value) <= text_limit else value[:text_limit]+' [excerpt truncated]'
+    if isinstance(value, list):
+        return [compact_example(v, text_limit) for v in value[:5]]
+    if isinstance(value, dict):
+        return {k: compact_example(v, text_limit) for k, v in value.items()}
+    return value
+
+
 def reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True):
     examples = []
     if with_diagnosis:
@@ -18,14 +29,26 @@ def reflect(client, answers, query_lookup, interventions, parent_code, with_diag
             examples[-1]['reference_answers'] = q['positive_answers']
             examples[-1]['source_evidence'] = q.get('evidence', [])
     prompt = {'task': 'Improve only memory management; answering system is frozen.',
-              'parent_code': parent_code, 'examples': examples,
-              'interventions': interventions if with_diagnosis else [],
+              'parent_code': parent_code, 'examples': compact_example(examples),
+              'interventions': compact_example(interventions) if with_diagnosis else [],
+              'diagnostic_excerpts': True,
               'required_output': {'clusters': [{'label':'string','case_ids':[], 'attribution':'string','uncertainty':'low/medium/high'}],
                                   'proposals':[{'direction':'string','hypothesis':'string','prediction':'string','risk':'string'}]},
               'constraints': 'Return exactly three distinct proposals. If no reliable failure attribution exists, say so. '
                              'Do not insert references or answers into policy code. Changes only affect memory state and retrieval.'}
-    response = client.complete([{'role':'system','content':'You diagnose memory-management errors offline. Return valid JSON, no markdown.'},
-                                {'role':'user','content':json.dumps(prompt,ensure_ascii=False)}],role='reflexion',json_mode=True)
+    # Keep complete code; reduce only diagnostic excerpts uniformly before
+    # dropping examples. This engineering character cap leaves output headroom
+    # for the deployed 32k context; it is not an exact tokenizer budget.
+    for limit in (500, 300, 150, 75):
+        prompt['examples'] = compact_example(examples, limit)
+        if len(json.dumps(prompt, ensure_ascii=False)) <= 24000: break
+    while len(json.dumps(prompt, ensure_ascii=False)) > 24000 and prompt['examples']:
+        prompt['examples'].pop()
+    serialized = json.dumps(prompt, ensure_ascii=False)
+    if len(serialized) > 24000:
+        raise ValueError('Reflexion parent/config exceeds engineering input budget')
+    response = client.complete([{'role':'system','content':'You diagnose memory-management errors offline. Excerpts can be truncated; express attribution uncertainty. Return valid JSON, no markdown.'},
+                                {'role':'user','content':serialized}],role='reflexion',json_mode=True)
     obj = json.loads(response['text'])
     if not isinstance(obj,dict) or not isinstance(obj.get('clusters'),list) or len(obj.get('proposals',[])) != 3:
         raise ValueError('Reflexion must return clusters and exactly three proposals')
@@ -33,6 +56,8 @@ def reflect(client, answers, query_lookup, interventions, parent_code, with_diag
         if not isinstance(proposal,dict) or not all(isinstance(proposal.get(k),str) for k in ['direction','hypothesis','prediction','risk']):
             raise ValueError('Invalid proposal schema')
     obj['call'] = {k: response[k] for k in ['usage','latency_s','role']}
+    obj['input_chars'] = len(serialized)
+    obj['diagnostic_example_count'] = len(prompt['examples'])
     return obj
 
 

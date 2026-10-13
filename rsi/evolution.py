@@ -6,6 +6,19 @@ import json
 import math
 from .sandbox import validate_source
 
+REFLECTION_SCHEMA = {
+    'type':'object', 'additionalProperties':False, 'required':['clusters','proposals'],
+    'properties': {
+        'clusters': {'type':'array','maxItems':6,'items':{
+            'type':'object','additionalProperties':False,
+            'required':['label','case_ids','attribution','uncertainty'],
+            'properties':{'label':{'type':'string'},'case_ids':{'type':'array','items':{'type':'string'}},
+                          'attribution':{'type':'string'},'uncertainty':{'enum':['low','medium','high']}}}},
+        'proposals': {'type':'array','minItems':3,'maxItems':3,'items':{
+            'type':'object','additionalProperties':False,
+            'required':['direction','hypothesis','prediction','risk'],
+            'properties':{k:{'type':'string'} for k in ['direction','hypothesis','prediction','risk']}}}}}
+
 
 def compact_example(value, text_limit=500):
     """Bound diagnostic excerpts without producing broken JSON or hidden data."""
@@ -47,14 +60,19 @@ def reflect(client, answers, query_lookup, interventions, parent_code, with_diag
     serialized = json.dumps(prompt, ensure_ascii=False)
     if len(serialized) > 24000:
         raise ValueError('Reflexion parent/config exceeds engineering input budget')
-    response = client.complete([{'role':'system','content':'You diagnose memory-management errors offline. Excerpts can be truncated; express attribution uncertainty. Return valid JSON, no markdown.'},
-                                {'role':'user','content':serialized}],role='reflexion',json_mode=True)
+    response = client.complete([{'role':'system','content':'You diagnose memory-management errors offline. Excerpts can be truncated; express attribution uncertainty. Return valid JSON, no markdown. Keep each text field concise: at most 150 characters. Produce exactly three distinct proposals.'},
+                                {'role':'user','content':serialized}],role='reflexion',json_mode=True,json_schema=REFLECTION_SCHEMA)
     obj = json.loads(response['text'])
     if not isinstance(obj,dict) or not isinstance(obj.get('clusters'),list) or len(obj.get('proposals',[])) != 3:
         raise ValueError('Reflexion must return clusters and exactly three proposals')
     for proposal in obj['proposals']:
         if not isinstance(proposal,dict) or not all(isinstance(proposal.get(k),str) for k in ['direction','hypothesis','prediction','risk']):
             raise ValueError('Invalid proposal schema')
+    for cluster in obj['clusters']:
+        if not isinstance(cluster,dict) or not isinstance(cluster.get('case_ids'),list) or \
+                cluster.get('uncertainty') not in ('low','medium','high') or \
+                not all(isinstance(cluster.get(k),str) for k in ('label','attribution')):
+            raise ValueError('Invalid cluster schema')
     obj['call'] = {k: response[k] for k in ['usage','latency_s','role']}
     obj['input_chars'] = len(serialized)
     obj['diagnostic_example_count'] = len(prompt['examples'])

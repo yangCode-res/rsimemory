@@ -34,7 +34,7 @@ search(state: JSONState, query: str, filters: JSON) -> list[str]
 
 session 只包含允许 policy 处理的原始历史内容与必要的会话标识，不包括问题、题型、答案、评分、来源标注或未来会话。原始会话是只读输入；policy 可以变换其内容形成派生状态，但不能请求宿主删除或改写原文。
 
-函数不得改变入参对象本身；应返回新 state。宿主会按函数返回值替换当前快照，记录输入/输出状态字节数、执行耗时和任何经 provider 的模型调用成本。
+输入 state 是通过 JSON 传入独立子进程的副本；函数可以在副本上更新并返回 state。宿主只采用返回值，不共享子进程内存。在 search 时返回值不得推进宿主快照；只有 ingest 可以更新下一检查点的状态。
 
 ### `search(state, query, filters)`
 
@@ -58,7 +58,7 @@ session 只包含允许 policy 处理的原始历史内容与必要的会话标�
   },
   "read": {
     "arguments": {"ids": ["memory_id"]},
-    "result": [{"id": "memory_id", "content": "full evidence", "session_id": 12}]
+    "result": [{"id": "memory_id", "text": "full evidence", "session_id": 12}]
   }
 }
 ```

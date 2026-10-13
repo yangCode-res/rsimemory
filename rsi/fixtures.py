@@ -19,7 +19,7 @@ def dataset():
 class FixtureClient:
     """Predictable fake server exercises protocols only, without real data."""
     def __init__(self): self.calls=[]
-    def complete(self,messages,role='actor',json_mode=False):
+    def complete(self,messages,role='actor',json_mode=False,json_schema=None):
         if role == 'actor':
             question=messages[1]['content']
             if not any(m['content'].startswith('search result:') for m in messages):

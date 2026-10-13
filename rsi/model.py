@@ -28,7 +28,7 @@ class ModelClient:
         self.calls: list[dict[str, Any]] = []
 
     def complete(self, messages: list[dict[str, str]], role: str = "actor",
-                 json_mode: bool = False) -> dict[str, Any]:
+                 json_mode: bool = False, json_schema: dict[str, Any] | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
             "temperature": self.temperature,
@@ -36,7 +36,10 @@ class ModelClient:
             "messages": messages,
             "chat_template_kwargs": {"enable_thinking": False},
         }
-        if json_mode:
+        if json_schema is not None:
+            body["response_format"] = {"type": "json_schema", "json_schema":
+                                       {"name": role, "schema": json_schema, "strict": True}}
+        elif json_mode:
             body["response_format"] = {"type": "json_object"}
         headers = {"Content-Type": "application/json"}
         if self.api_key:

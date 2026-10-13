@@ -34,3 +34,4 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 - 受限 Python、子进程、Linux libseccomp 与资源限制联合防护，缺失即 fail-closed；尚不是经安全审计的通用多租户沙箱。
 - 初版根节点只展开一次；无诊断对照随后通过 --no-diagnosis 独立补跑。
 - 当前上下文采用字符限额，精确 tokenizer 预算待接。fixture 的模拟模型和 judge 只验证协议，不是科学成绩。
+- Reflexion 输入采用完整父版本代码与受限诊断摘录，工程上限 24000 字符；截断显式标记。调用失败写入 reflexion-failure.json，训练或验证评分不完整的版本不参加 Pareto 或训练收益回传。

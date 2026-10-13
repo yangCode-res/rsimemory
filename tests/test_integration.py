@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from rsi.data import chunk_session, normalize_query, patient_splits
-from rsi.evolution import new_node, backprop, uct, pareto, reflect
+from rsi.evolution import new_node, backprop, uct, pareto, reflect, generate
 from rsi.fixtures import FixtureClient, dataset
 from rsi.policy import PlainPolicy
 from rsi.runtime import HostTools, replay, InterventionTools
@@ -82,5 +82,15 @@ class PipelineIntegration(unittest.TestCase):
         self.assertEqual(payload['parent_code'],'baseline'*1200)
         self.assertTrue(payload['diagnostic_excerpts'])
         self.assertTrue(payload['examples'])
+
+    def test_rejected_source_is_preserved_without_execution(self):
+        class InvalidCodeClient:
+            def complete(self,*args,**kwargs):
+                return {'text':json.dumps({'code':'import os'}),'usage':{'completion_tokens':3},
+                        'latency_s':1.,'role':'codegen'}
+        with self.assertRaises(Exception) as caught:
+            generate(InvalidCodeClient(),{},'parent')
+        self.assertEqual(caught.exception.candidate_source,'import os')
+        self.assertEqual(caught.exception.codegen_cost['usage']['completion_tokens'],3)
 
 if __name__=='__main__':unittest.main()

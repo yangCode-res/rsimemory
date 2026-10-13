@@ -149,6 +149,10 @@ def main():
                 comparisons[name]=comparison_metric(v)
                 comparisons[name]['valid']=node['status']=='evaluated'
             except Exception as exc:
+                if hasattr(exc,'candidate_source'):
+                    (branch/'policy.py').write_text(exc.candidate_source)
+                    dump(branch/'codegen-cost.json',exc.codegen_cost)
+                    node['commit']=commit_policy(out/'policy-git',exc.candidate_source,name,root_commit)
                 node['status']='invalid';node['failure']=f'{type(exc).__name__}: {exc}'
                 dump(branch/'failure.json',{'reason':node['failure']})
             dump(out/'tree.json',tree)

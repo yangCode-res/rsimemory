@@ -90,13 +90,25 @@ Allowed builtins: sorted,len,min,max,sum,range,set,list,dict,str,int,float,bool,
 Allowed methods: lower,strip,split,join,replace,startswith,endswith,find,count,casefold,append,extend,insert,
 pop,remove,reverse,sort,copy,index,get,keys,values,items,update,setdefault. Helper functions are allowed.
 Use only passed config/state/session/query/filters. Each function must have explicit arguments without defaults.
+All function and variable names must start with a Latin letter, NEVER an underscore. Use tokens, rank, helper;
+never _tokens, _rank, __init__, _ or self. JSON keys such as session_id are allowed.
+The parent is trusted host class code in a DIFFERENT dialect. Do not copy its class methods as functions.
+Rewrite the algorithm as these three JSON-state entry functions using the supplied legal starter.
 Prefer simple loop-based code. Do not include scores, patient-specific constants, or evaluation questions.'''
     response = client.complete([{'role':'system','content':instruction},
-                                {'role':'user','content':json.dumps({'proposal':proposal,'parent_code':parent_code},ensure_ascii=False)}],
+                                {'role':'user','content':json.dumps({'proposal':proposal,'parent_code':parent_code,
+                                                                   'legal_starter':PARENT_CODE},ensure_ascii=False)}],
                                role='codegen',json_mode=True)
     obj = json.loads(response['text']); code = obj.get('code')
-    validate_source(code)
-    return code, {k: response[k] for k in ['usage','latency_s','role']}
+    cost = {k: response[k] for k in ['usage','latency_s','role']}
+    try:
+        validate_source(code)
+    except Exception as exc:
+        # Rejected proposals remain reviewable without running their code.
+        if isinstance(code,str): exc.candidate_source = code
+        exc.codegen_cost = cost
+        raise
+    return code, cost
 
 
 PARENT_CODE = '''def initialize(config):

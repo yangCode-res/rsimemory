@@ -59,7 +59,7 @@ class PlainPolicy:
             try:
                 from sentence_transformers import SentenceTransformer
 
-                self._model = SentenceTransformer(str(local_path), local_files_only=True)
+                self._model = SentenceTransformer(str(local_path), device="cpu", local_files_only=True)
             except Exception as exc:
                 raise RuntimeError(f"could not load local sentence-transformer model: {local_path}") from exc
 
@@ -155,7 +155,7 @@ class PlainPolicy:
             try:
                 missing = [c for c in eligible if (c["id"], c["text"]) not in self._embedding_cache]
                 encode_inputs = [str(query)] + [c["text"] for c in missing]
-                vectors = self._model.encode(encode_inputs, normalize_embeddings=True)
+                vectors = self._model.encode(encode_inputs, batch_size=32, normalize_embeddings=True)
                 query_vector = tuple(float(x) for x in vectors[0])
                 for chunk, vector in zip(missing, vectors[1:]):
                     self._embedding_cache[(chunk["id"], chunk["text"])] = tuple(float(x) for x in vector)

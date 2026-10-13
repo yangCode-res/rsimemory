@@ -9,7 +9,7 @@ import subprocess
 import sys
 from importlib.metadata import version, PackageNotFoundError
 from urllib.error import URLError
-from .data import load_medmemory, patient_splits, representative_queries
+from .data import load_medmemory, patient_splits, representative_queries, SPLIT_VERSION
 from .evolution import reflect, generate, new_node, backprop, pareto
 from .fixtures import FixtureClient, dataset as fixture_dataset
 from .model import ModelClient
@@ -67,7 +67,8 @@ def main():
     if out.exists(): p.error('Use a new output directory; never overwrite runs')
     if not args.fixture and not args.dataset: p.error('--dataset is required')
     config={'contract_version':'v0.3','interface_version':'v0.3','state_serializer':'cloudpickle-base64-v1','chunk_chars':1200,'chunk_overlap':120,'top_k':5,'max_steps':4,'context_chars':16000,
-            'mode':'Efficient','seed':20261013,'language':args.language,
+            'mode':'Efficient','seed':20261013,'split_version':SPLIT_VERSION,
+            'split_fractions':{'train':.4,'validation':.2,'test':.4},'language':args.language,
             'fixture':args.fixture,'model':args.model,'judge_model':args.judge_model or args.model,
             'speculation':'disabled','policy_auxiliary_model':'disabled',**vars(args)}
     config['judge_model']=args.judge_model or args.model
@@ -96,6 +97,7 @@ def main():
         judge_client=ModelClient(args.judge_url or args.base_url,args.judge_model or args.model,max_tokens=1024)
         optimizer=ModelClient(args.base_url,args.model,max_tokens=3072)
     split=patient_splits([s['persona_id'] for s in sessions],config['seed'])
+    config['split_patient_counts']={k:len(v) for k,v in split.items()}
     # Diagnostic subset keeps test sealed and stays within each original split.
     run_ids={k:v[:args.patients_per_split] if args.patients_per_split else v for k,v in split.items() if k!='test'}
     run_queries={k:representative_queries(queries,v,args.checkpoint,args.per_type) for k,v in run_ids.items()}

@@ -5,14 +5,21 @@ import json
 import re
 from pathlib import Path
 
+SPLIT_VERSION = 'patient-v2-40-20-40-preserve-validation'
+
 
 def patient_splits(ids, seed=20261013):
     ids = sorted(set(ids), key=lambda x: hashlib.sha256(f'{seed}:{x}'.encode()).hexdigest())
     n = len(ids)
     if n < 3:
         raise ValueError('At least three patients required for disjoint splits')
-    a, b = max(1, int(n*.6)), max(1, int(n*.2))
-    return {'train': ids[:a], 'validation': ids[a:a+b], 'test': ids[a+b:]}
+    train_count, validation_count = max(1, int(n*.4)), max(1, int(n*.2))
+    # Keep the original validation cohort at the 60%-80% hash-order range.
+    # Former unused training patients become test; former validation stays out.
+    validation_start = max(train_count, min(int(n*.6), n-validation_count-1))
+    validation_end = validation_start + validation_count
+    return {'train': ids[:train_count], 'validation': ids[validation_start:validation_end],
+            'test': ids[train_count:validation_start] + ids[validation_end:]}
 
 
 def normalize_query(row):

@@ -22,5 +22,16 @@
   "candidate_count": 3,
   "search_expansions": 1,
   "no_diagnosis_control": "planned subsequent run",
-  "test_evaluation": false
+  "test_evaluation": false,
+  "split_version": "patient-v2-40-20-40-preserve-validation",
+  "split_patients": {
+    "train": 8,
+    "validation": 4,
+    "test": 8
+  },
+  "split_fractions": {
+    "train": 0.4,
+    "validation": 0.2,
+    "test": 0.4
+  }
 }

@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,6 +10,25 @@ from rsi.policy import PlainPolicy
 from rsi.runtime import HostTools, replay, InterventionTools
 
 class PipelineIntegration(unittest.TestCase):
+    def test_twenty_patient_split_is_8_4_8_and_preserves_validation(self):
+        ids=list(range(1,21));seed=20261013
+        ordered=sorted(ids,key=lambda x:hashlib.sha256(f'{seed}:{x}'.encode()).hexdigest())
+        split=patient_splits(ids,seed)
+        self.assertEqual({k:len(v) for k,v in split.items()},{'train':8,'validation':4,'test':8})
+        self.assertEqual(split['validation'],ordered[12:16])
+        self.assertEqual(split['train'],ordered[:8])
+        self.assertEqual(set(split['test']),set(ordered[8:12]+ordered[16:]))
+        self.assertFalse(set(split['test']) & set(ordered[12:16]))
+
+    def test_patient_split_is_stable_complete_and_handles_small_fixtures(self):
+        for n in range(3,21):
+            ids=list(range(n));split=patient_splits(ids)
+            self.assertEqual(split,patient_splits(list(reversed(ids))+ids))
+            groups=[set(v) for v in split.values()]
+            self.assertTrue(all(groups))
+            self.assertEqual(set.union(*groups),set(ids))
+            self.assertEqual(sum(map(len,groups)),n)
+
     def test_online_chunks_strip_annotations(self):
         row={'persona_id':1,'session_id':10,'text':'abc'*100,'answers':'SECRET','query_type':'SECRET'}
         for chunk in chunk_session(row,40,5):

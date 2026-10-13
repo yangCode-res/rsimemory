@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import time
 import urllib.request
+from .data import patient_splits
 
 TYPES = ['entity_exact_match', 'temporal_localization', 'state_update',
          'multiple_choice', 'inference_generation', 'multi_hop_clinical_deduction']
@@ -86,10 +87,7 @@ def load_dataset(root, language):
     return sessions, q.to_dict('records')
 
 def make_splits(ids, seed):
-    ordered = sorted(ids, key=lambda x: hashlib.sha256(f'{seed}:{x}'.encode()).hexdigest())
-    n = len(ordered)
-    a, b = max(1, int(n*.6)), max(1, int(n*.2))
-    return {'train': ordered[:a], 'validation': ordered[a:a+b], 'test': ordered[a+b:]}
+    return patient_splits(ids, seed)
 
 def uct(q, visits, parent_visits, c=1.414):
     return math.inf if visits == 0 else q+c*math.sqrt(math.log(max(1, parent_visits))/visits)

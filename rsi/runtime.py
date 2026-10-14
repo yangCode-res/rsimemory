@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
+import tempfile
 import time
 from .actor import Actor, ACTOR_SYSTEM_PROMPT
 from .data import chunk_session
@@ -12,7 +14,17 @@ from .evaluation import evaluate, aggregate
 
 def dump(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2))
+    # Readers and periodic archival see either the old complete metadata or
+    # the new complete metadata, never a file truncated during rewriting.
+    fd, temporary = tempfile.mkstemp(prefix='.rsi-atomic-', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            stream.write(json.dumps(value, ensure_ascii=False, indent=2))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 class HostTools:

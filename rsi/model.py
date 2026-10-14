@@ -2,10 +2,38 @@
 from __future__ import annotations
 
 import json
+import errno
+import http.client
 import os
+import socket
 import time
+import urllib.error
 import urllib.request
 from typing import Any
+
+
+class ModelServiceUnavailable(RuntimeError):
+    """The configured model endpoint could not be reached reliably."""
+
+
+_NETWORK_ERRNOS = {errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
+                   errno.ETIMEDOUT, errno.ENETUNREACH, errno.EHOSTUNREACH,
+                   errno.EPIPE, errno.EIO}
+
+
+def _transport_error(exc: Exception) -> str | None:
+    """Return a safe exception class for infrastructure failures only."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return None
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        return type(reason).__name__ if isinstance(reason, BaseException) else type(exc).__name__
+    if isinstance(exc, (http.client.RemoteDisconnected, ConnectionError,
+                        TimeoutError, socket.timeout)):
+        return type(exc).__name__
+    if isinstance(exc, OSError) and exc.errno in _NETWORK_ERRNOS:
+        return type(exc).__name__
+    return None
 
 
 class ModelClient:
@@ -77,6 +105,14 @@ class ModelClient:
             result = {"text": str(content), "usage": payload.get("usage") or {},
                       "latency_s": elapsed, "role": role}
         except Exception as exc:
+            transport_class = _transport_error(exc)
+            if transport_class:
+                safe_error = f"Model service unavailable ({transport_class})"
+                self.calls.append({"role": role,
+                                   "usage": payload.get("usage") or {} if isinstance(payload, dict) else {},
+                                   "latency_s": time.perf_counter() - started,
+                                   "error": safe_error})
+                raise ModelServiceUnavailable(safe_error) from None
             self.calls.append({"role": role,
                                "usage": payload.get("usage") or {} if isinstance(payload, dict) else {},
                                "latency_s": time.perf_counter() - started,

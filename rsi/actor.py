@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from .model import ModelServiceUnavailable
 
 
 ACTOR_SYSTEM_PROMPT = """You answer the user's question using only the supplied memory evidence.
@@ -101,6 +102,8 @@ class Actor:
                 call_recorded = True
                 raw_text = call["text"]
                 action = _json_object(raw_text)
+            except ModelServiceUnavailable:
+                raise
             except Exception as exc:
                 if not call_recorded:
                     calls.append({"role": "actor", "usage": {}, "latency_s": 0.0,
@@ -129,6 +132,8 @@ class Actor:
                     try:
                         result = _compact_evidence(tools.search(action["query"], filters))
                         evidence.extend(result)
+                    except ModelServiceUnavailable:
+                        raise
                     except Exception as exc:
                         result = {"error": f"{type(exc).__name__}: {exc}"}
                         trajectory.append({"step": step, "action": "search", "error": result["error"]})
@@ -142,6 +147,8 @@ class Actor:
                 try:
                     result = _compact_evidence(tools.read([str(item) for item in action["ids"]]))
                     evidence.extend(result)
+                except ModelServiceUnavailable:
+                    raise
                 except Exception as exc:
                     result = {"error": f"{type(exc).__name__}: {exc}"}
                     trajectory.append({"step": step, "action": "read", "error": result["error"]})
@@ -178,6 +185,8 @@ class Actor:
                     status = "forced_final"
                 else:
                     status = "forced_final_invalid"
+            except ModelServiceUnavailable:
+                raise
             except Exception as exc:
                 if not call_recorded:
                     calls.append({"role": "actor", "usage": {}, "latency_s": 0.0,

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import inspect
 import json
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -12,7 +13,7 @@ from urllib.error import URLError
 from .data import load_medmemory, patient_splits, representative_queries, SPLIT_VERSION
 from .evolution import reflect, generate, new_node, backprop, pareto
 from .fixtures import FixtureClient, dataset as fixture_dataset
-from .model import ModelClient
+from .model import ModelClient, ModelServiceUnavailable
 from .policy import PlainPolicy, GeneratedPolicy
 from .runtime import replay, dump, intervention, call_cost
 
@@ -43,6 +44,12 @@ def comparison_metric(report):
             'policy_bytes':max([r.get('peak_storage_bytes',r.get('storage_bytes',0)) for r in cost] or [0])}
 
 
+def _interrupt_replay(signum, frame):
+    # The supervisor stops infrastructure failures through normal exception
+    # cleanup, so an active replay retains its failed progress and flushed rows.
+    raise ModelServiceUnavailable('Replay interrupted by supervisor')
+
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--dataset')
@@ -63,6 +70,7 @@ def main():
     p.add_argument('--candidate-timeout-s',type=float,default=30.)
     p.add_argument('--candidate-memory-mb',type=int,default=2048)
     args=p.parse_args()
+    signal.signal(signal.SIGTERM, _interrupt_replay)
     out=Path(args.output)
     if out.exists(): p.error('Use a new output directory; never overwrite runs')
     if not args.fixture and not args.dataset: p.error('--dataset is required')
@@ -123,6 +131,8 @@ def main():
             comparisons['plain-semantic']=comparison_metric(sv)
             semantic={'status':'evaluated' if st['AVG'] is not None and sv['AVG'] is not None else 'incomplete_scoring'}
             comparisons['plain-semantic']['valid']=semantic['status']=='evaluated'
+        except ModelServiceUnavailable:
+            raise
         except Exception as exc: semantic={'status':'failed','reason':str(exc)}
     dump(out/'semantic-status.json',semantic)
     lookup={q['query_id']:q for q in run_queries['train']}
@@ -133,6 +143,8 @@ def main():
         try:
             diagnosis=reflect(optimizer,train_rows,lookup,interventions,root_code,not args.no_diagnosis)
             dump(out/'reflexion.json',diagnosis)
+        except ModelServiceUnavailable:
+            raise
         except Exception as exc:
             diagnosis={'proposals': [], 'status':'failed'}
             dump(out/'reflexion-failure.json',{'reason':f'{type(exc).__name__}: {exc}'})
@@ -162,6 +174,8 @@ def main():
                 if node['status']=='evaluated': backprop(tree,name,t['AVG'])
                 comparisons[name]=comparison_metric(v)
                 comparisons[name]['valid']=node['status']=='evaluated'
+            except ModelServiceUnavailable:
+                raise
             except Exception as exc:
                 if hasattr(exc,'candidate_source'):
                     (branch/'policy.py').write_text(exc.candidate_source)

@@ -24,6 +24,16 @@ class SyntheticPolicy:
 
 
 class ProgressPersistenceTests(unittest.TestCase):
+    def test_metadata_publication_failure_keeps_previous_complete_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/'progress.json'
+            runtime.dump(path, {'completed':1})
+            with patch.object(runtime.os, 'replace', side_effect=OSError('synthetic publication failure')):
+                with self.assertRaises(OSError):
+                    runtime.dump(path, {'completed':2})
+            self.assertEqual(json.loads(path.read_text()), {'completed':1})
+            self.assertEqual(list(Path(temp).iterdir()), [path])
+
     def setUp(self):
         self.sessions = [
             {'persona_id': 'synthetic-person', 'session_id': 1, 'text': 'synthetic memory one'},

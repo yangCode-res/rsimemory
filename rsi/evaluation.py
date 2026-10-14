@@ -6,6 +6,7 @@ import re
 import unicodedata
 from collections import Counter, defaultdict
 from typing import Any
+from .model import ModelServiceUnavailable
 
 
 TYPES = (
@@ -225,6 +226,8 @@ def evaluate(query: dict[str, Any], answer: str, client: Any) -> dict[str, Any]:
         return {"score": score, "status": "scored", "reason": decoded["reason"],
                 "call_log": log, "cost": {"calls": 1, "latency_s": latency,
                                             "usage": numeric_usage}}
+    except ModelServiceUnavailable:
+        raise
     except Exception as exc:
         latency = locals().get("latency", 0.0)
         usage = locals().get("usage", {})

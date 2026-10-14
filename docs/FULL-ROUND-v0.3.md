@@ -11,3 +11,15 @@
 各 replay 阶段逐题写入 `answers.jsonl` 与 `operations.jsonl`，并更新 `progress.json`，异常时保留已完成部分。当前支持观察与留档，不支持从中途检查点恢复。逐题医疗文本只存服务器；状态汇报读取聚合进度和成本。
 
 调度器日志：`runs/full-JOBID.log`；阶段状态和预检：`runs/full-job-JOBID/`；冻结代码：`runs/code-JOBID/`；实验产物：`runs/full-v03-splitv2-JOBID/`。最终完整性以各阶段 `report.json`、`summary.json` 和候选失败记录核实，不能只依赖 Slurm 退出码。
+
+## 2026-10-14 存储与服务故障修复
+
+以上路径为首次失败作业 145703 的布局，保留不覆盖。修复后 `full_round.sbatch` 先从 SLURM_TMPDIR、TMPDIR、/tmp 选择真正本地的文件系统，要求至少 10 GiB 可用空间，建立权限 0700 的独立目录并完成写入、fsync、读回预检。共享文件系统不能作为运行 scratch。
+
+冻结代码克隆、TorchInductor/Triton/FlashInfer/CUDA/DeepGEMM 等编译缓存、临时文件、活动服务日志和答案日志都在本地 scratch 中写入；模型权重、Python 环境和输入数据仍从共享目录读取。启动器保留此前模型与调度参数，不启用推测解码，不改变 ReAct 提示词、问答预算、题目、评分规则或患者划分。
+
+本地 `artifacts/` 每分钟通过原子临时文件与 rename 尝试同步至 `runs/full-v03-local-JOBID/`。活跃阶段只视为阶段性快照，不宣称一致；网络存储故障不打断本地评测。作业结束后停止所有写入，再复制、逐文件 SHA-256 核验并生成 `_archive-manifest.json`。最终归档失败使作业非零退出并保留本地目录，不能将失败声称为完成。不会自动删除本地或历史运行；节点本地存储是否在作业结束后被系统清理仍取决于集群，不能当作永久备份。
+
+新的服务器归档布局：`runs/full-v03-local-JOBID/result/` 为评测产物，`meta/` 为状态、预检、代码版本及本地位置，根目录保留 `server.log`、`launcher.log`。调度器日志只记本地目录、节点和归档路径，便于归档失败时恢复。
+
+ModelClient 对连接拒绝、远端断开、网络/连接超时等基础设施错误抛出专用 `ModelServiceUnavailable`；Actor、judge 和 CLI 的宽泛异常捕获均继续向上抛出，整轮立即停止。逐题执行器保留已完成日志和 failed 进度，不继续将后续题批量记录为未评分。HTTP 响应和模型格式错误保持原来的分类与处理。独立健康监视器同时观察模型进程与健康端点，服务不可用时中断 replay。该修复不能保证共享存储的读取和最终归档永不失败。

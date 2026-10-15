@@ -2,7 +2,10 @@ __pycache__/
 *.pyc
 runs/
 .venv/
-
-._*
-.venv/
 models/
+._*
+deploy/langfuse/.env
+deploy/langfuse/.env.*
+deploy/langfuse/credentials*
+observability-runtime/
+observability-images/

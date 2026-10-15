@@ -45,3 +45,5 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 当前真实数据划分为训练 8 位、验证 4 位、测试 8 位，seed=20261013；原验证患者保持不变。完整记录见 [数据划分 v2](docs/DATA-SPLIT-v2.md)，历史运行保持原样。
 
 全量首轮使用 `sbatch scripts/full_round.sbatch`，流程、逐题进度留档与唯一题号修复见 [全量运行记录](docs/FULL-ROUND-v0.3.md)。
+
+轨迹分析采用服务器本地 JSONL 记录与独立 Langfuse 导入，接入方式、历史记录的证据边界见 [Langfuse 轨迹说明](docs/LANGFUSE.md)。

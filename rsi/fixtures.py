@@ -28,7 +28,10 @@ class FixtureClient:
         elif role == 'judge': result={'score':1,'reason':'synthetic fixture evaluator only'}
         elif role == 'reflexion':
             result={'clusters':[{'label':'fixture','case_ids':[],'attribution':'synthetic protocol test','uncertainty':'high'}],
-                    'proposals':[{'direction':f'fixture-{i}','hypothesis':'protocol check','prediction':'runs','risk':'not research evidence'} for i in range(3)]}
+                    'proposals':[{'direction':f'fixture-{i}','hypothesis':'protocol check','prediction':'runs','risk':'not research evidence',
+                                  'basis':'exploratory','rationale':'synthetic protocol test only',
+                                  'supporting_case_ids':[], 'supporting_cluster_labels':[],
+                                  'uncertainty':'high'} for i in range(3)]}
         elif role == 'codegen':
             from .evolution import PARENT_CODE
             result={'code':PARENT_CODE}

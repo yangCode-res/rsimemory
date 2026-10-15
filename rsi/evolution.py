@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from .sandbox import validate_source
+from .tracing import trace_span
 
 REFLECTION_SCHEMA = {
     'type':'object', 'additionalProperties':False, 'required':['clusters','proposals'],
@@ -16,8 +17,13 @@ REFLECTION_SCHEMA = {
                           'attribution':{'type':'string'},'uncertainty':{'enum':['low','medium','high']}}}},
         'proposals': {'type':'array','minItems':3,'maxItems':3,'items':{
             'type':'object','additionalProperties':False,
-            'required':['direction','hypothesis','prediction','risk'],
-            'properties':{k:{'type':'string'} for k in ['direction','hypothesis','prediction','risk']}}}}}
+            'required':['direction','hypothesis','prediction','risk','basis','rationale',
+                        'supporting_case_ids','supporting_cluster_labels','uncertainty'],
+            'properties':{**{k:{'type':'string'} for k in ['direction','hypothesis','prediction','risk','rationale']},
+                          'basis':{'enum':['training_cases','parent_code','exploratory']},
+                          'supporting_case_ids':{'type':'array','items':{'type':'string'}},
+                          'supporting_cluster_labels':{'type':'array','items':{'type':'string'}},
+                          'uncertainty':{'enum':['low','medium','high']}}}}}}
 
 
 def compact_example(value, text_limit=500):
@@ -32,6 +38,13 @@ def compact_example(value, text_limit=500):
 
 
 def reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True):
+    with trace_span('reflexion', metadata={'role':'reflexion', 'evidence_scope':'train_only'}) as observation:
+        result = _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis)
+        observation.update(output=result)
+        return result
+
+
+def _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True):
     examples = []
     if with_diagnosis:
         # Keep failed and successful cases, never validation item-level results.
@@ -46,9 +59,17 @@ def reflect(client, answers, query_lookup, interventions, parent_code, with_diag
               'interventions': compact_example(interventions) if with_diagnosis else [],
               'diagnostic_excerpts': True,
               'required_output': {'clusters': [{'label':'string','case_ids':[], 'attribution':'string','uncertainty':'low/medium/high'}],
-                                  'proposals':[{'direction':'string','hypothesis':'string','prediction':'string','risk':'string'}]},
+                                  'proposals':[{'direction':'string','hypothesis':'string','prediction':'string','risk':'string',
+                                                'basis':'training_cases/parent_code/exploratory','rationale':'brief observable basis',
+                                                'supporting_case_ids':[], 'supporting_cluster_labels':[],
+                                                'uncertainty':'low/medium/high'}]},
               'constraints': 'Return exactly three distinct proposals. If no reliable failure attribution exists, say so. '
-                             'Do not insert references or answers into policy code. Changes only affect memory state and retrieval.'}
+                             'Do not insert references or answers into policy code. Changes only affect memory state and retrieval. '
+                             'For each proposal report a concise evidence-based rationale, its basis, and uncertainty. '
+                             'Only cite case IDs actually supplied in examples and exact cluster labels. '
+                             'Code-inspection and exploratory ideas may use empty case links; say the support is unmeasured. '
+                             'Do not claim measured memory leaks, latency, or causation without supplied measurements. '
+                             'These are explicit hypotheses for audit, not requests for private chain-of-thought.'}
     # Keep complete code; reduce only diagnostic excerpts uniformly before
     # dropping examples. This engineering character cap leaves output headroom
     # for the deployed 32k context; it is not an exact tokenizer budget.
@@ -60,6 +81,12 @@ def reflect(client, answers, query_lookup, interventions, parent_code, with_diag
     serialized = json.dumps(prompt, ensure_ascii=False)
     if len(serialized) > 24000:
         raise ValueError('Reflexion parent/config exceeds engineering input budget')
+    with trace_span('diagnostic-input', input=prompt,
+                    metadata={'actual_model_input':True, 'input_chars':len(serialized),
+                              'diagnostic_example_count':len(prompt['examples']),
+                              'parent_code_sha256':hashlib.sha256(parent_code.encode()).hexdigest()}) as observation:
+        observation.update(output={'selected_case_ids':[e['query_id'] for e in prompt['examples']],
+                                   'selection':'first 4 scored failures + first 2 successes, excerpt/budget bounded'})
     response = client.complete([{'role':'system','content':'You diagnose memory-management errors offline. Excerpts can be truncated; express attribution uncertainty. Return valid JSON, no markdown. Keep each text field concise: at most 150 characters. Produce exactly three distinct proposals.'},
                                 {'role':'user','content':serialized}],role='reflexion',json_mode=True,json_schema=REFLECTION_SCHEMA)
     obj = json.loads(response['text'])
@@ -73,13 +100,41 @@ def reflect(client, answers, query_lookup, interventions, parent_code, with_diag
                 cluster.get('uncertainty') not in ('low','medium','high') or \
                 not all(isinstance(cluster.get(k),str) for k in ('label','attribution')):
             raise ValueError('Invalid cluster schema')
+    actual_ids = {e['query_id'] for e in prompt['examples']}
+    labels = {c['label'] for c in obj['clusters']}
+    for cluster in obj['clusters']:
+        if not set(cluster['case_ids']).issubset(actual_ids):
+            raise ValueError('Cluster cites a case absent from actual training input')
+    for proposal in obj['proposals']:
+        if proposal.get('basis') not in ('training_cases','parent_code','exploratory') or \
+                not isinstance(proposal.get('rationale'),str) or \
+                proposal.get('uncertainty') not in ('low','medium','high') or \
+                not isinstance(proposal.get('supporting_case_ids'),list) or \
+                not isinstance(proposal.get('supporting_cluster_labels'),list):
+            raise ValueError('Proposal needs an auditable rationale, basis, links and uncertainty')
+        if not set(proposal['supporting_case_ids']).issubset(actual_ids) or \
+                not set(proposal['supporting_cluster_labels']).issubset(labels):
+            raise ValueError('Proposal cites evidence absent from its actual reflection input')
+        if proposal['basis']=='training_cases' and not proposal['supporting_case_ids']:
+            raise ValueError('Training-case motivation needs at least one supplied case')
     obj['call'] = {k: response[k] for k in ['usage','latency_s','role']}
     obj['input_chars'] = len(serialized)
     obj['diagnostic_example_count'] = len(prompt['examples'])
+    obj['diagnostic_case_ids'] = [e['query_id'] for e in prompt['examples']]
+    obj['rationale_schema'] = 'evidence-v2'
+    obj['rationale_status'] = 'model_reported_hypotheses_not_verified_causes'
     return obj
 
 
 def generate(client, proposal, parent_code):
+    with trace_span('codegen', input={'proposal':proposal}, metadata={'role':'codegen'}) as observation:
+        source, cost = _generate(client, proposal, parent_code)
+        observation.update(output={'source':source, 'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
+                                   'cost':cost})
+        return source, cost
+
+
+def _generate(client, proposal, parent_code):
     instruction = '''Produce a standalone normal Python memory-policy module. Return JSON {"code":"..."}.
 Provide callable initialize(config), ingest(state,session), search(state,query,filters).
 Normal Python classes, helpers, lambdas, annotations, exceptions, comprehensions, decorators, default

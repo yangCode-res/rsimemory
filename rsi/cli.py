@@ -16,6 +16,7 @@ from .fixtures import FixtureClient, dataset as fixture_dataset
 from .model import ModelClient, ModelServiceUnavailable
 from .policy import PlainPolicy, GeneratedPolicy
 from .runtime import replay, dump, intervention, call_cost
+from .tracing import trace_run, trace_span, write_failure_count
 
 
 def commit_policy(repo, code, label, parent=None):
@@ -81,6 +82,7 @@ def main():
             'speculation':'disabled','policy_auxiliary_model':'disabled',**vars(args)}
     config['judge_model']=args.judge_model or args.model
     config['actor_max_tokens']=1024;config['optimizer_max_tokens']=3072
+    config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v2'
     config['python_version']=sys.version.split()[0]
     try: config['cloudpickle_version']=version('cloudpickle')
     except PackageNotFoundError: config['cloudpickle_version']=None
@@ -110,6 +112,18 @@ def main():
     run_ids={k:v[:args.patients_per_split] if args.patients_per_split else v for k,v in split.items() if k!='test'}
     run_queries={k:representative_queries(queries,v,args.checkpoint,args.per_type) for k,v in run_ids.items()}
     out.mkdir(parents=True)
+    with trace_run(out/'traces.jsonl', run_id=out.name,
+                   metadata={'implementation_commit':config['implementation_commit'],
+                             'contract_version':config['contract_version'], 'fixture':args.fixture,
+                             'rationale_schema':config['rationale_schema']}) as round_span:
+        round_span.update(input={'split_patient_counts':config['split_patient_counts'],
+                                 'objective':'improve memory policy under a frozen actor',
+                                 'language':args.language})
+        summary=_run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer)
+        round_span.update(output=summary, metadata={'trace_write_failures':write_failure_count()})
+
+
+def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer):
     dump(out/'config.json',config);dump(out/'splits.json',split);dump(out/'run_patients.json',run_ids)
     dump(out/'config-hash.json',{'sha256':hashlib.sha256(json.dumps(config,sort_keys=True).encode()).hexdigest()})
     root_code=inspect.getsource(PlainPolicy)
@@ -150,11 +164,21 @@ def main():
             dump(out/'reflexion-failure.json',{'reason':f'{type(exc).__name__}: {exc}'})
         for i,proposal in enumerate(diagnosis['proposals']):
             name=f'candidate-{i+1}';node=new_node(name,'plain-bm25');node['proposal']=proposal;tree['nodes'][name]=node
+            with trace_span('evolution.proposal', input=proposal,
+                            metadata={'policy':name, 'parent_policy':'plain-bm25',
+                                      'rationale_status':'model_reported_hypothesis'}) as observation:
+                observation.update(output={'basis':proposal.get('basis'), 'rationale':proposal.get('rationale'),
+                                           'supporting_case_ids':proposal.get('supporting_case_ids',[]),
+                                           'supporting_cluster_labels':proposal.get('supporting_cluster_labels',[]),
+                                           'uncertainty':proposal.get('uncertainty')})
             branch=out/'branches'/name;branch.mkdir(parents=True)
             dump(branch/'proposal.json',proposal)
             stage='codegen'
             try:
-                source,cost=generate(optimizer,proposal,root_code)
+                with trace_span('candidate.codegen', metadata={'policy':name, 'parent_policy':'plain-bm25'},
+                                input={'proposal':proposal}) as observation:
+                    source,cost=generate(optimizer,proposal,root_code)
+                    observation.update(output={'source_sha256':hashlib.sha256(source.encode()).hexdigest()})
                 (branch/'policy.py').write_text(source);dump(branch/'codegen-cost.json',cost)
                 code_hash=hashlib.sha256(source.encode()).hexdigest()
                 if code_hash in seen_code and not args.fixture:
@@ -187,6 +211,8 @@ def main():
                 dump(branch/'failure.json',{'reason':node['failure'],'category':node['failure_category'],
                                            'stage':stage,'policy_cost':getattr(exc,'policy_cost',None)})
             dump(out/'tree.json',tree)
+            with trace_span('candidate.result', metadata={'policy':name}) as observation:
+                observation.update(output=node)
             branches.append(node)
     dump(out/'tree.json',tree)
     summary={'contract_version':config['contract_version'],'fixture':args.fixture,'scientific_result':False if args.fixture else 'engineering rubric; uncalibrated',
@@ -195,6 +221,8 @@ def main():
                                        'intervention':call_cost([c for r in (interventions if args.evolve else []) for c in r['call_log']])},
              'test_evaluated':False,'no_diagnosis_control':args.no_diagnosis}
     dump(out/'summary.json',summary)
+    with trace_span('round.result') as observation:
+        observation.update(output=summary)
     lines=['# 工程运行报告', '', '此运行用于协议和工程验证，未经过论文级 judge 校准。', '',
            '|版本|验证 AVG|Policy 秒数|Policy 峰值字节|', '|---|---:|---:|---:|']
     for name,r in comparisons.items():
@@ -208,6 +236,7 @@ def main():
     print(json.dumps({'run':str(out),'fixture':args.fixture,'branches':len(branches),
                       'valid_candidates':sum(n['status']=='evaluated' for n in branches),
                       'test_evaluated':False}))
+    return summary
 
 
 if __name__=='__main__': main()

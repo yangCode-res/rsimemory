@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+from .tracing import trace_span
 
 
 class ModelServiceUnavailable(RuntimeError):
@@ -57,6 +58,12 @@ class ModelClient:
 
     def complete(self, messages: list[dict[str, str]], role: str = "actor",
                  json_mode: bool = False, json_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        with trace_span('llm.'+role, kind='generation', input={'messages': messages},
+                        metadata={'role': role, 'temperature': self.temperature,
+                                  'max_tokens': self.max_tokens}) as observation:
+            return self._complete(messages, role, json_mode, json_schema, observation)
+
+    def _complete(self, messages, role, json_mode, json_schema, observation):
         body: dict[str, Any] = {
             "model": self.model,
             "temperature": self.temperature,
@@ -84,6 +91,11 @@ class ModelClient:
             with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
                 payload = json.load(response)
             elapsed = time.perf_counter() - started
+            # Retain the actual response before protocol/length validation, so
+            # failed code generation remains inspectable in the private trace.
+            observation.update(output=payload, model=self.model,
+                               usage=payload.get('usage', {}) if isinstance(payload, dict) else {},
+                               metadata={'latency_s': elapsed})
             if not isinstance(payload, dict):
                 raise ValueError("chat completion response must be a JSON object")
             choices = payload.get("choices")

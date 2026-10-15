@@ -10,6 +10,7 @@ import time
 from .actor import Actor, ACTOR_SYSTEM_PROMPT
 from .data import chunk_session
 from .evaluation import evaluate, aggregate
+from .tracing import trace_span
 
 
 def dump(path, value):
@@ -39,6 +40,13 @@ class HostTools:
         self.registry = copy.deepcopy(getattr(policy, '_registry', getattr(policy, '_by_id', {})))
 
     def search(self, query, filters=None):
+        with trace_span('memory.search', kind='retriever',
+                        input={'query':query, 'filters':filters}) as observation:
+            rows = self._search(query, filters)
+            observation.update(output=rows)
+            return rows
+
+    def _search(self, query, filters=None):
         filters = dict(filters or {})
         if set(filters)-{'session_id', 'min_session_id'}:
             raise PermissionError('Scope fields are owned by the host')
@@ -56,6 +64,12 @@ class HostTools:
                  'session_id': self.visible[r['id']]['session_id']} for r in rows]
 
     def read(self, ids):
+        with trace_span('memory.read', kind='tool', input={'ids':ids}) as observation:
+            rows = self._read(ids)
+            observation.update(output=rows)
+            return rows
+
+    def _read(self, ids):
         if len(ids) > self.top_k or len(set(ids)) != len(ids):
             raise PermissionError('Invalid read cardinality')
         if any(cid not in self.visible for cid in ids):
@@ -105,6 +119,14 @@ def call_cost(calls):
 
 
 def replay(sessions, queries, ids, policy_factory, actor_client, judge_client, config, output):
+    path = Path(output)
+    with trace_span('replay', metadata={'fold':path.name, 'policy':path.parent.name}) as observation:
+        result = _replay(sessions, queries, ids, policy_factory, actor_client, judge_client, config, output)
+        observation.update(output=result[0])
+        return result
+
+
+def _replay(sessions, queries, ids, policy_factory, actor_client, judge_client, config, output):
     out = Path(output); out.mkdir(parents=True, exist_ok=False)
     answers, operations, costs = [], [], []
     begin = time.perf_counter()
@@ -155,11 +177,19 @@ def replay(sessions, queries, ids, policy_factory, actor_client, judge_client, c
                         actor = Actor(actor_client, config['max_steps'], config['context_chars'])
                         tools = HostTools(policy, pid, session['session_id'], config['top_k'],
                                           config['context_chars'], on_operation=persist_tool_operation)
-                        response = actor.answer(q['question'], tools)
-                        if response['status'] not in ('completed', 'forced_final'):
-                            grade = {'score': None, 'status': 'actor_failed', 'reason': response['status'], 'call_log': []}
-                        else:
-                            grade = evaluate(q, response['answer'], judge_client)
+                        with trace_span('question', kind='agent', new_trace=True,
+                                        input={'question':q['question']},
+                                        metadata={'query_id':q['query_id'], 'checkpoint':q['session_id'],
+                                                  'query_type':q['query_type']}) as question_span:
+                            response = actor.answer(q['question'], tools)
+                            if response['status'] not in ('completed', 'forced_final'):
+                                grade = {'score': None, 'status': 'actor_failed', 'reason': response['status'], 'call_log': []}
+                            else:
+                                with trace_span('grade', kind='evaluator') as grade_span:
+                                    grade = evaluate(q, response['answer'], judge_client)
+                                    grade_span.update(output=grade)
+                            question_span.update(output={'answer':response['answer'], 'score':grade['score'],
+                                                         'status':grade['status'], 'reason':grade['reason']})
                         row = {'persona_id': pid, 'query_id': q['query_id'], 'session_id': q['session_id'],
                                'query_type': q['query_type'], 'question': q['question'],
                                'answer': response['answer'], 'actor_status': response['status'],

@@ -44,7 +44,7 @@ CLI 自动在运行目录写入 `traces.jsonl`。记录器使用标准库，不�
   --output runs/langfuse-backfill-146133-v2/export-receipt.json
 ```
 
-新运行可直接导入对应的 `traces.jsonl`，无需 backfill。导入使用 OTLP HTTP JSON 与 v4 ingestion header，按体积分批。回执绑定输入 SHA、服务地址和项目公钥指纹；同一回执跳过已接受批次。服务接受不等于 UI 已完成异步入库，需要另行查询确认。OTLP 不承诺去重，避免删除回执后重复提交。
+新运行可直接导入对应的 `traces.jsonl`，无需 backfill。导入使用 OTLP HTTP JSON 与 v4 ingestion header，按体积分批。回执绑定输入 SHA、服务地址和项目公钥指纹；同一回执跳过已接受批次。若服务部分接收批次，该批次记入 `blocked_ids`，不能区分其中具体接受的记录，因此不自动重传，须排查服务端并人工处理。服务接受不等于 UI 已完成异步入库，需要另行查询确认。OTLP 不承诺去重，避免删除回执后重复提交。
 
 历史决策根 trace ID 为 `ac9f73e55556abd6462be8f4e27bebea`；完整导航在导入目录的 `index.json`，根 observation 仅放有限导航，避免超大单条请求。
 

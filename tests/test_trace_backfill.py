@@ -132,6 +132,8 @@ class TraceBackfillTests(unittest.TestCase):
             self.assertNotIn("must never ingest test", json.dumps(first))
             all_traces, all_index = build_backfill(run, scope="all", imported_at_ns=123)
             self.assertEqual(all_index["case_trace_count"], 11)
+            self.assertEqual(all_index["trace_count"], 12)
+            self.assertEqual(all_index["observation_count"], len(all_traces))
             case_rows = [row for row in all_traces if row["name"] == "rsi.historical.case"]
             self.assertTrue(any(row["metadata"]["fold"] == "validation" for row in case_rows))
             self.assertNotIn("must never ingest test", json.dumps(all_traces))

@@ -220,8 +220,17 @@ class LangfuseExporterTests(unittest.TestCase):
                 "LANGFUSE_HOST": "http://localhost:3000", "LANGFUSE_PUBLIC_KEY": "pk",
                 "LANGFUSE_SECRET_KEY": "sk"}, opener=lambda *args, **kwargs: Response())
             self.assertEqual(result["accepted_ids"], [])
-            self.assertEqual(result["pending_ids"], ["b" * 16])
+            self.assertEqual(result["pending_ids"], [])
+            self.assertEqual(result["blocked_ids"], ["b" * 16])
+            self.assertEqual(result["delivery_status"], "blocked_partial_success")
             self.assertEqual(result["rejected_spans"], 1)
+            retried = mock.Mock(side_effect=AssertionError("partial-success batches must not auto-retry"))
+            again = export_langfuse.export(source, receipt, env={
+                "LANGFUSE_HOST": "http://localhost:3000", "LANGFUSE_PUBLIC_KEY": "pk",
+                "LANGFUSE_SECRET_KEY": "sk"}, opener=retried)
+            retried.assert_not_called()
+            self.assertEqual(again["blocked_ids"], ["b" * 16])
+            self.assertEqual(again["pending_ids"], [])
 
     def test_invalid_success_response_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -242,11 +251,48 @@ class LangfuseExporterTests(unittest.TestCase):
 
     def test_rejected_span_counts_must_be_valid_nonnegative_integers(self):
         for body in (b'{"partialSuccess":{"rejectedSpans":-1}}',
-                     b'{"partialSuccess":{"rejectedSpans":"1"}}',
+                     b'{"partialSuccess":{"rejectedSpans":"invalid"}}',
                      b'{"partialSuccess":[]}'):
             with self.subTest(body=body):
                 with self.assertRaises(export_langfuse.ExportError):
                     export_langfuse._rejected_spans(body)
+        self.assertEqual(export_langfuse._rejected_spans(
+            b'{"partialSuccess":{"rejectedSpans":"1"}}'), 1)
+        self.assertEqual(export_langfuse._rejected_spans(
+            b'{"partialSuccess":{"rejectedSpans":1}}'), 1)
+
+    def test_partial_success_is_checkpointed_before_later_http_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, receipt = Path(temp) / "traces.jsonl", Path(temp) / "receipt.json"
+            first = self._record()
+            second = {**self._record(), "trace_id": "d" * 32, "span_id": "e" * 16}
+            source.write_text(json.dumps(first) + "\n" + json.dumps(second) + "\n")
+            span_size = len(json.dumps(export_langfuse._payload([
+                export_langfuse.record_to_span(first)]), separators=(",", ":")).encode())
+            calls = 0
+
+            class Response:
+                status = 200
+                def __enter__(self): return self
+                def __exit__(self, *args): return False
+                def read(self): return b'{"partialSuccess":{"rejectedSpans":"1"}}'
+
+            def opener(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return Response()
+                from urllib.error import HTTPError
+                raise HTTPError("http://localhost", 503, "unavailable", {}, None)
+
+            with self.assertRaisesRegex(export_langfuse.ExportError, "HTTP 503"):
+                export_langfuse.export(source, receipt, env={
+                    "LANGFUSE_HOST": "http://localhost:3000", "LANGFUSE_PUBLIC_KEY": "pk",
+                    "LANGFUSE_SECRET_KEY": "sk"}, opener=opener,
+                    max_batch_bytes=span_size)
+            saved = json.loads(receipt.read_text())
+            self.assertEqual(saved["blocked_ids"], [first["span_id"]])
+            self.assertEqual(saved["pending_ids"], [second["span_id"]])
 
     def test_redirect_handler_refuses_all_redirects(self):
         handler = export_langfuse._NoRedirectHandler()

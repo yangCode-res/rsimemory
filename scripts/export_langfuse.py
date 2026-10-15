@@ -2,8 +2,9 @@
 
 The exporter preserves recorder-generated IDs. This supports deliberate
 retries, but OTLP ingestion does not promise deduplication, so retries may
-produce duplicate observations. Accepted batches in an existing receipt are
-skipped; batches with partial rejection are retried as a whole.
+produce duplicate observations. Fully accepted batches are skipped from a
+receipt; partial-success batches are blocked because OTLP does not identify
+which spans were accepted, and need separate manual resolution.
 """
 from __future__ import annotations
 
@@ -270,7 +271,10 @@ def _rejected_spans(response):
     if "rejectedSpans" in partial and "rejected_spans" in partial:
         raise ExportError("Langfuse returned an ambiguous rejected-span count")
     count = partial.get("rejectedSpans", partial.get("rejected_spans", 0))
-    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+    if isinstance(count, str) and count.isascii() and count.isdecimal():
+        count = int(count)
+    if (isinstance(count, bool) or not isinstance(count, int) or count < 0 or
+            count > (2**63 - 1)):
         raise ExportError("Langfuse returned an invalid rejected-span count")
     return count
 
@@ -298,6 +302,12 @@ def _check_receipt(receipt, receipt_type, input_hash, endpoint=None,
     accepted = receipt.get("accepted_ids", [])
     if not isinstance(accepted, list) or any(not isinstance(item, str) for item in accepted):
         raise ExportError("Receipt has invalid accepted span IDs")
+    blocked = receipt.get("blocked_ids", [])
+    if not isinstance(blocked, list) or any(not isinstance(item, str) for item in blocked):
+        raise ExportError("Receipt has invalid blocked span IDs")
+    rejected = receipt.get("rejected_batches", [])
+    if not isinstance(rejected, list):
+        raise ExportError("Receipt has invalid rejected batches")
 
 
 def export(input_path, output_path, *, dry_run=False, allow_remote=False,
@@ -316,6 +326,7 @@ def export(input_path, output_path, *, dry_run=False, allow_remote=False,
             receipt = {"schema_version": 1, "receipt_type": "dry_run",
                        "accepted_ids": [], "rejected_batches": []}
         accepted = set(receipt.get("accepted_ids", []))
+        blocked = set()
     else:
         public = env.get("LANGFUSE_PUBLIC_KEY")
         secret = env.get("LANGFUSE_SECRET_KEY")
@@ -334,7 +345,19 @@ def export(input_path, output_path, *, dry_run=False, allow_remote=False,
                        "public_key_fingerprint": public_fingerprint,
                        "delivery_semantics": "accepted_by_langfuse_ingestion_not_ui_visibility"}
         accepted = set(receipt.get("accepted_ids", []))
-    pending = [[s for s in batch if s["spanId"] not in accepted] for batch in batches]
+        # A partial-success response may mean some spans in a batch were
+        # accepted, but OTLP supplies no accepted IDs. Keep the whole batch in
+        # a blocked state so a receipt-based retry cannot duplicate it.
+        blocked = set(receipt.get("blocked_ids", []))
+        prior_rejections = receipt.get("rejected_batches", [])
+        if isinstance(prior_rejections, list):
+            for prior in prior_rejections:
+                if isinstance(prior, dict) and isinstance(prior.get("span_ids"), list):
+                    blocked.update(item for item in prior["span_ids"] if isinstance(item, str))
+        blocked.update(item for item in receipt.get("blocked_ids", [])
+                       if isinstance(item, str))
+    pending = [[s for s in batch if s["spanId"] not in accepted and
+                s["spanId"] not in blocked] for batch in batches]
     pending = [batch for batch in pending if batch]
     receipt.update({"schema_version": 1, "input_records": len(records),
                     "span_ids": all_ids, "dry_run": bool(dry_run),
@@ -347,11 +370,13 @@ def export(input_path, output_path, *, dry_run=False, allow_remote=False,
         return receipt
     if not pending:
         receipt["pending_ids"] = []
+        receipt["blocked_ids"] = sorted(blocked)
+        receipt["delivery_status"] = "blocked_partial_success" if blocked else "accepted"
         _write_receipt(output_path, receipt)
         return receipt
     auth = base64.b64encode(f"{public}:{secret}".encode()).decode("ascii")
     send = opener or _safe_urlopen
-    rejected_batches = []
+    rejected_batches = list(receipt.get("rejected_batches", []))
     rejected_total = 0
     accepted_now = []
     for index, batch in enumerate(pending):
@@ -367,6 +392,7 @@ def export(input_path, output_path, *, dry_run=False, allow_remote=False,
             with response_obj as response:
                 status, response_body = response.status, response.read()
         except HTTPError as exc:
+            exc.close()
             raise ExportError(f"Langfuse rejected export with HTTP {exc.code}") from None
         except (URLError, OSError, TimeoutError):
             raise ExportError("Langfuse export request failed") from None
@@ -377,22 +403,43 @@ def export(input_path, output_path, *, dry_run=False, allow_remote=False,
             raise ExportError("Langfuse returned an impossible rejected-span count")
         if rejected:
             rejected_total += rejected
-            rejected_batches.append({"batch_index": index, "span_ids": [s["spanId"] for s in batch],
-                                     "rejected_spans": rejected})
+            batch_ids = [s["spanId"] for s in batch]
+            blocked.update(batch_ids)
+            rejected_batches.append({"batch_index": index, "span_ids": batch_ids,
+                                     "rejected_spans": rejected,
+                                     "state": "blocked_partial_success"})
+            receipt["accepted_ids"] = sorted(accepted)
+            receipt["blocked_ids"] = sorted(blocked)
+            receipt["pending_ids"] = [s["spanId"] for b in pending for s in b
+                                       if s["spanId"] not in accepted and s["spanId"] not in blocked]
+            receipt["rejected_batches"] = rejected_batches
+            receipt["rejected_spans"] = sum(
+                item.get("rejected_spans", 0) for item in rejected_batches
+                if isinstance(item, dict) and isinstance(item.get("rejected_spans", 0), int)
+                and not isinstance(item.get("rejected_spans", 0), bool))
+            receipt["delivery_status"] = "blocked_partial_success"
+            _write_receipt(output_path, receipt)
         else:
             accepted_now.extend(s["spanId"] for s in batch)
             accepted.update(s["spanId"] for s in batch)
             receipt["accepted_ids"] = sorted(accepted)
+            receipt["blocked_ids"] = sorted(blocked)
             receipt["pending_ids"] = [s["spanId"] for b in pending for s in b
-                                       if s["spanId"] not in accepted]
+                                       if s["spanId"] not in accepted and s["spanId"] not in blocked]
             receipt["rejected_batches"] = rejected_batches
+            receipt["delivery_status"] = "blocked_partial_success" if blocked else "accepted"
             _write_receipt(output_path, receipt)
     receipt["accepted_ids"] = sorted(accepted)
     receipt["accepted_this_run"] = accepted_now
     receipt["rejected_batches"] = rejected_batches
-    receipt["rejected_spans"] = rejected_total
+    receipt["rejected_spans"] = sum(
+        item.get("rejected_spans", 0) for item in rejected_batches
+        if isinstance(item, dict) and isinstance(item.get("rejected_spans", 0), int)
+        and not isinstance(item.get("rejected_spans", 0), bool))
+    receipt["blocked_ids"] = sorted(blocked)
     receipt["pending_ids"] = [s["spanId"] for b in pending for s in b
-                               if s["spanId"] not in accepted]
+                               if s["spanId"] not in accepted and s["spanId"] not in blocked]
+    receipt["delivery_status"] = "blocked_partial_success" if blocked else "accepted"
     _write_receipt(output_path, receipt)
     return receipt
 
@@ -416,7 +463,7 @@ def main(argv=None):
         return 1
     print(json.dumps({k: receipt.get(k) for k in (
         "input_records", "batches", "span_ids", "accepted_ids", "pending_ids",
-        "rejected_spans", "dry_run")}, sort_keys=True))
+        "blocked_ids", "rejected_spans", "delivery_status", "dry_run")}, sort_keys=True))
     return 0
 
 

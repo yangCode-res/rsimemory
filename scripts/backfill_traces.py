@@ -26,6 +26,7 @@ def main() -> None:
     print(json.dumps({"output": str(Path(args.output)),
                       "decision_trace_id": index["decision_trace_id"],
                       "trace_count": index["trace_count"],
+                      "observation_count": index["observation_count"],
                       "case_trace_count": index["case_trace_count"],
                       "selected_diagnostic_case_count": index["selected_diagnostic_case_count"],
                       "scope": index["scope"]}, separators=(",", ":")))

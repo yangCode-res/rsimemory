@@ -93,6 +93,8 @@ policy 代码不能任意调用模型服务。允许的辅助模型调用须经�
 
 固定回答模型和 judge 的调用由执行器另行计量，分别报告，不与 policy 管理成本合并。policy 调用和状态处理至少记录初始化、摄入、检索阶段耗时；存储记录当前及峰值 state 字节数。成本报告先呈现实测值，不施加阈值。
 
+离线优化器的生成参数独立于冻结的 actor/judge：当前 Reflexion 上限 8192 tokens、temperature 0.7，代码生成上限 16384 tokens、temperature 0.4，超时 900 秒；可由运行参数覆盖并冻结到 config/trace。actor/judge 仍为 1024 tokens、temperature 0。提示版本 `explore-v1`、归因 schema `evidence-v3` 随新运行记录；这不改变 policy v0.3 的入口和权限。提案允许重构任意 policy 内部机制，并记录操作机制和证伪检查；生成长度耗尽属于 `generation_truncated`，不属于入口契约违规。服务端总上下文仍为输入与输出合计的限制。
+
 ## 6. 快照与候选运行隔离
 
 候选在固定 Python runtime 中使用普通 Python 语义，可以创建类和实例、定义 lambda、使用异常处理和推导式、导入运行环境已安装的库。每次新 run 须冻结 Python/runtime、cloudpickle 及候选依赖版本；未安装的依赖不自动联网安装，需作为受审查的运行环境依赖另行配置。

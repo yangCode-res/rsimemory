@@ -17,6 +17,11 @@ class ModelServiceUnavailable(RuntimeError):
     """The configured model endpoint could not be reached reliably."""
 
 
+class ModelOutputTruncated(ValueError):
+    """Incomplete generation, distinct from a policy contract violation."""
+    category = 'generation_truncated'
+
+
 _NETWORK_ERRNOS = {errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
                    errno.ETIMEDOUT, errno.ENETUNREACH, errno.EHOSTUNREACH,
                    errno.EPIPE, errno.EIO}
@@ -47,27 +52,34 @@ class ModelClient:
 
     def __init__(self, base_url: str = "http://127.0.0.1:7860/v1", model: str = "",
                  api_key: str | None = None, timeout_s: float = 180.0,
-                 temperature: float = 0.0, max_tokens: int = 1024):
+                 temperature: float = 0.0, max_tokens: int = 1024,
+                 role_settings: dict[str, dict[str, Any]] | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key if api_key is not None else os.getenv("RSI_API_KEY")
         self.timeout_s = float(timeout_s)
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
+        self.role_settings = {role: dict(settings) for role, settings in (role_settings or {}).items()}
         self.calls: list[dict[str, Any]] = []
 
     def complete(self, messages: list[dict[str, str]], role: str = "actor",
                  json_mode: bool = False, json_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        settings = {'temperature':self.temperature, 'max_tokens':self.max_tokens,
+                    'timeout_s':self.timeout_s}
+        overrides = self.role_settings.get(role, {})
+        if set(overrides) - set(settings):
+            raise ValueError('Unknown per-role generation setting')
+        settings.update(overrides)
         with trace_span('llm.'+role, kind='generation', input={'messages': messages},
-                        metadata={'role': role, 'temperature': self.temperature,
-                                  'max_tokens': self.max_tokens}) as observation:
-            return self._complete(messages, role, json_mode, json_schema, observation)
+                        metadata={'role': role, **settings}) as observation:
+            return self._complete(messages, role, json_mode, json_schema, observation, settings)
 
-    def _complete(self, messages, role, json_mode, json_schema, observation):
+    def _complete(self, messages, role, json_mode, json_schema, observation, settings):
         body: dict[str, Any] = {
             "model": self.model,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "temperature": settings['temperature'],
+            "max_tokens": settings['max_tokens'],
             "messages": messages,
             "chat_template_kwargs": {"enable_thinking": False},
         }
@@ -88,7 +100,7 @@ class ModelClient:
         started = time.perf_counter()
         payload: Any = None
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+            with urllib.request.urlopen(request, timeout=settings['timeout_s']) as response:
                 payload = json.load(response)
             elapsed = time.perf_counter() - started
             # Retain the actual response before protocol/length validation, so
@@ -103,7 +115,7 @@ class ModelClient:
                 raise ValueError("chat completion response has no valid choices")
             choice = choices[0]
             if choice.get("finish_reason") == "length":
-                raise ValueError("chat completion was truncated (finish_reason=length)")
+                raise ModelOutputTruncated("chat completion was truncated (finish_reason=length)")
             message = choice.get("message", {})
             if not isinstance(message, dict):
                 raise ValueError("chat completion choice has no valid message")

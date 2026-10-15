@@ -79,7 +79,7 @@ class ObservabilityIntegration(unittest.TestCase):
         result=reflect(client,rows,{str(i):{'positive_answers':['synthetic']} for i in range(8)},[],
                        'def initialize(config): return {}')
         self.assertEqual(result['diagnostic_case_ids'],[e['query_id'] for e in client.input['examples']])
-        self.assertEqual(result['diagnostic_example_count'],5)
+        self.assertEqual(result['diagnostic_example_count'],6)
         self.assertEqual(result['rationale_status'],'model_reported_hypotheses_not_verified_causes')
 
 

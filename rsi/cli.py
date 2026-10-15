@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import inspect
 import json
+import math
 import signal
 from pathlib import Path
 import subprocess
@@ -70,7 +71,19 @@ def main():
     p.add_argument('--max-interventions',type=int,default=2)
     p.add_argument('--candidate-timeout-s',type=float,default=30.)
     p.add_argument('--candidate-memory-mb',type=int,default=2048)
+    p.add_argument('--reflexion-max-tokens',type=int,default=8192)
+    p.add_argument('--codegen-max-tokens',type=int,default=16384)
+    p.add_argument('--reflexion-temperature',type=float,default=0.7)
+    p.add_argument('--codegen-temperature',type=float,default=0.4)
+    p.add_argument('--optimizer-timeout-s',type=float,default=900.)
     args=p.parse_args()
+    if min(args.reflexion_max_tokens,args.codegen_max_tokens)<=0:
+        p.error('Optimizer token budgets must be positive')
+    if not all(math.isfinite(t) and 0<=t<=2 for t in
+               (args.reflexion_temperature,args.codegen_temperature)):
+        p.error('Optimizer temperatures must be finite and between 0 and 2')
+    if not math.isfinite(args.optimizer_timeout_s) or args.optimizer_timeout_s<=0:
+        p.error('Optimizer timeout must be finite and positive')
     signal.signal(signal.SIGTERM, _interrupt_replay)
     out=Path(args.output)
     if out.exists(): p.error('Use a new output directory; never overwrite runs')
@@ -81,8 +94,14 @@ def main():
             'fixture':args.fixture,'model':args.model,'judge_model':args.judge_model or args.model,
             'speculation':'disabled','policy_auxiliary_model':'disabled',**vars(args)}
     config['judge_model']=args.judge_model or args.model
-    config['actor_max_tokens']=1024;config['optimizer_max_tokens']=3072
-    config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v2'
+    config['actor_max_tokens']=1024
+    config['optimizer_generation_settings']={
+        'reflexion':{'max_tokens':args.reflexion_max_tokens,'temperature':args.reflexion_temperature,
+                     'timeout_s':args.optimizer_timeout_s},
+        'codegen':{'max_tokens':args.codegen_max_tokens,'temperature':args.codegen_temperature,
+                   'timeout_s':args.optimizer_timeout_s}}
+    config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v3'
+    config['evolution_prompt_version']='explore-v1'
     config['python_version']=sys.version.split()[0]
     try: config['cloudpickle_version']=version('cloudpickle')
     except PackageNotFoundError: config['cloudpickle_version']=None
@@ -105,7 +124,8 @@ def main():
         sessions,queries=load_medmemory(args.dataset,args.language)
         actor_client=ModelClient(args.base_url,args.model,max_tokens=1024)
         judge_client=ModelClient(args.judge_url or args.base_url,args.judge_model or args.model,max_tokens=1024)
-        optimizer=ModelClient(args.base_url,args.model,max_tokens=3072)
+        optimizer=ModelClient(args.base_url,args.model,
+                              role_settings=config['optimizer_generation_settings'])
     split=patient_splits([s['persona_id'] for s in sessions],config['seed'])
     config['split_patient_counts']={k:len(v) for k,v in split.items()}
     # Diagnostic subset keeps test sealed and stays within each original split.
@@ -155,7 +175,14 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
         interventions=intervention(train_rows,lookup,actor_client,judge_client,sessions,args.max_interventions) if args.max_interventions>0 else []
         dump(out/'interventions.json',interventions)
         try:
-            diagnosis=reflect(optimizer,train_rows,lookup,interventions,root_code,not args.no_diagnosis)
+            context={'active_parent_config':{
+                'retrieval_mode':'lexical_bm25','semantic_weight':0.,
+                'policy_auxiliary_model':config['policy_auxiliary_model'],
+                **{k:config[k] for k in ('top_k','max_steps','context_chars','chunk_chars','chunk_overlap')}},
+                'parent_train_metrics':{'comparison':comparison_metric(train),
+                    'type_accuracy':train.get('type_accuracy',{}),'counts':train.get('counts',{})}}
+            diagnosis=reflect(optimizer,train_rows,lookup,interventions,root_code,
+                              not args.no_diagnosis,policy_context=context)
             dump(out/'reflexion.json',diagnosis)
         except ModelServiceUnavailable:
             raise
@@ -168,6 +195,8 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
                             metadata={'policy':name, 'parent_policy':'plain-bm25',
                                       'rationale_status':'model_reported_hypothesis'}) as observation:
                 observation.update(output={'basis':proposal.get('basis'), 'rationale':proposal.get('rationale'),
+                                           'mechanism':proposal.get('mechanism'),
+                                           'falsification_test':proposal.get('falsification_test'),
                                            'supporting_case_ids':proposal.get('supporting_case_ids',[]),
                                            'supporting_cluster_labels':proposal.get('supporting_cluster_labels',[]),
                                            'uncertainty':proposal.get('uncertainty')})

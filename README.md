@@ -47,3 +47,9 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 全量首轮使用 `sbatch scripts/full_round.sbatch`，流程、逐题进度留档与唯一题号修复见 [全量运行记录](docs/FULL-ROUND-v0.3.md)。
 
 轨迹分析采用服务器本地 JSONL 记录与独立 Langfuse 导入，接入方式、历史记录的证据边界见 [Langfuse 轨迹说明](docs/LANGFUSE.md)。
+
+优化器当前使用独立生成参数：Reflexion 输出上限 8192 tokens、temperature 0.7，代码生成输出上限 16384 tokens、temperature 0.4，超时均为 900 秒；actor/judge 仍为 1024 tokens、temperature 0。可通过 `--reflexion-max-tokens`、`--codegen-max-tokens`、`--reflexion-temperature`、`--codegen-temperature`、`--optimizer-timeout-s` 调整，最终参数写入运行配置和模型轨迹。全量脚本也接受对应的 `RSI_REFLEXION_*`、`RSI_CODEGEN_*`、`RSI_OPTIMIZER_TIMEOUT_S` 环境变量。输出预算不能突破服务端总上下文 32768 tokens；更大的父版本需要先核对输入长度，不能保证任意代码都能在一次生成内完成。
+
+`explore-v1` 反思提示以全任务 AVG/成本前沿为目标，允许替换记忆组织、索引、检索和 ingest 内部的更新/遗忘机制，不奖励低风险或最小改动；三个候选需探索不同机制，在有合理假设时包括结构性重构。输入增加父版本实际启用的配置和训练聚合指标，防止围绕未启用模块推断瓶颈。`evidence-v3` 提案在理由和证据引用之外记录 `mechanism`、`falsification_test`，取消每字段 150 字符限制。选出的四个失败与两个成功案例不再被外层列表隐式裁为五个，仍受显式 24000 字符输入预算约束。
+
+`finish_reason=length` 归档为 `generation_truncated`，保留实际模型响应与 token 用量，不再误记为契约错误；不完整代码不进入 replay。本次变更只作用于新运行，历史结果及 Langfuse 导入记录保持原样；参数与提示的调整本身不代表真实性能已改善。

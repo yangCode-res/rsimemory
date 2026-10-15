@@ -18,8 +18,10 @@ REFLECTION_SCHEMA = {
         'proposals': {'type':'array','minItems':3,'maxItems':3,'items':{
             'type':'object','additionalProperties':False,
             'required':['direction','hypothesis','prediction','risk','basis','rationale',
+                        'mechanism','falsification_test',
                         'supporting_case_ids','supporting_cluster_labels','uncertainty'],
-            'properties':{**{k:{'type':'string'} for k in ['direction','hypothesis','prediction','risk','rationale']},
+            'properties':{**{k:{'type':'string'} for k in ['direction','hypothesis','prediction','risk','rationale',
+                                                         'mechanism','falsification_test']},
                           'basis':{'enum':['training_cases','parent_code','exploratory']},
                           'supporting_case_ids':{'type':'array','items':{'type':'string'}},
                           'supporting_cluster_labels':{'type':'array','items':{'type':'string'}},
@@ -37,14 +39,17 @@ def compact_example(value, text_limit=500):
     return value
 
 
-def reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True):
+def reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True,
+            policy_context=None):
     with trace_span('reflexion', metadata={'role':'reflexion', 'evidence_scope':'train_only'}) as observation:
-        result = _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis)
+        result = _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis,
+                          policy_context)
         observation.update(output=result)
         return result
 
 
-def _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True):
+def _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True,
+             policy_context=None):
     examples = []
     if with_diagnosis:
         # Keep failed and successful cases, never validation item-level results.
@@ -54,19 +59,37 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
             examples.append({k: r[k] for k in ['query_id','query_type','question','answer','score','reason','evidence','trajectory']})
             examples[-1]['reference_answers'] = q['positive_answers']
             examples[-1]['source_evidence'] = q.get('evidence', [])
-    prompt = {'task': 'Improve only memory management; answering system is frozen.',
-              'parent_code': parent_code, 'examples': compact_example(examples),
+    context = dict(policy_context or {})
+    if not with_diagnosis:
+        context.pop('parent_train_metrics',None)
+    prompt = {'task': 'Improve memory-policy AVG across all task families under measured costs; answering system is frozen.',
+              'prompt_version':'explore-v1',
+              'parent_code': parent_code, 'parent_context':context, 'examples': [],
               'interventions': compact_example(interventions) if with_diagnosis else [],
               'diagnostic_excerpts': True,
               'required_output': {'clusters': [{'label':'string','case_ids':[], 'attribution':'string','uncertainty':'low/medium/high'}],
                                   'proposals':[{'direction':'string','hypothesis':'string','prediction':'string','risk':'string',
                                                 'basis':'training_cases/parent_code/exploratory','rationale':'brief observable basis',
+                                                'mechanism':'how the proposed memory operations change evidence availability or measured cost',
+                                                'falsification_test':'observation or comparison that would refute the hypothesis',
                                                 'supporting_case_ids':[], 'supporting_cluster_labels':[],
                                                 'uncertainty':'low/medium/high'}]},
+              'search_guidance': 'The baseline implementation is a starting point, not a preferred architecture. '
+                  'Explore any memory representation, indexing, retrieval/ranking, or ingest-time update, '
+                  'consolidation and forgetting mechanism expressible through the existing policy interface. '
+                  'These are examples, not a fixed menu. Seek mechanism-diverse proposals, not three variants of a minor patch. '
+                  'Include at least one substantial structural redesign when plausible; mark unsupported structural ideas '
+                  'exploratory with high uncertainty instead of inventing evidence. Do not prefer low risk, few changed lines, '
+                  'or memory savings over the AVG/cost frontier. Connect changes to observed memory failures when evidence permits. '
+                  'Check active_parent_config before targeting a code path: dormant optional embedding code is not evidence '
+                  'of an active cache bottleneck. Cost-only proposals need a relevant measured bottleneck or must be '
+                  'explicitly exploratory. Describe the operational mechanism and a falsification test.',
               'constraints': 'Return exactly three distinct proposals. If no reliable failure attribution exists, say so. '
                              'Do not insert references or answers into policy code. Changes only affect memory state and retrieval. '
                              'For each proposal report a concise evidence-based rationale, its basis, and uncertainty. '
                              'Only cite case IDs actually supplied in examples and exact cluster labels. '
+                             'Cluster attribution must explain the observed failure and inferred mechanism, not merely low/medium/high. '
+                             'Do not attach every case to every cluster without case-specific support. '
                              'Code-inspection and exploratory ideas may use empty case links; say the support is unmeasured. '
                              'Do not claim measured memory leaks, latency, or causation without supplied measurements. '
                              'These are explicit hypotheses for audit, not requests for private chain-of-thought.'}
@@ -74,7 +97,9 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
     # dropping examples. This engineering character cap leaves output headroom
     # for the deployed 32k context; it is not an exact tokenizer budget.
     for limit in (500, 300, 150, 75):
-        prompt['examples'] = compact_example(examples, limit)
+        # The outer case list is not an excerpt list: retain all six selected
+        # cases unless the explicit engineering budget requires dropping one.
+        prompt['examples'] = [compact_example(example, limit) for example in examples]
         if len(json.dumps(prompt, ensure_ascii=False)) <= 24000: break
     while len(json.dumps(prompt, ensure_ascii=False)) > 24000 and prompt['examples']:
         prompt['examples'].pop()
@@ -87,7 +112,14 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
                               'parent_code_sha256':hashlib.sha256(parent_code.encode()).hexdigest()}) as observation:
         observation.update(output={'selected_case_ids':[e['query_id'] for e in prompt['examples']],
                                    'selection':'first 4 scored failures + first 2 successes, excerpt/budget bounded'})
-    response = client.complete([{'role':'system','content':'You diagnose memory-management errors offline. Excerpts can be truncated; express attribution uncertainty. Return valid JSON, no markdown. Keep each text field concise: at most 150 characters. Produce exactly three distinct proposals.'},
+    response = client.complete([{'role':'system','content':
+                                'You design and diagnose memory-management policies offline. The answering agent is frozen; '
+                                'policy internals may be redesigned substantially. Seek testable gains in the AVG/cost frontier, '
+                                'not minimum edit distance or minimum risk. Produce exactly three mechanism-diverse proposals. '
+                                'Ground claims in the supplied active configuration and training evidence, distinguish observation '
+                                'from inference, and permit ambitious exploratory hypotheses with explicit uncertainty. '
+                                'Excerpts may be truncated. Explain enough for an independent reviewer to test each mechanism; '
+                                'there is no arbitrary 150-character field limit. Return valid JSON, no markdown.'},
                                 {'role':'user','content':serialized}],role='reflexion',json_mode=True,json_schema=REFLECTION_SCHEMA)
     obj = json.loads(response['text'])
     if not isinstance(obj,dict) or not isinstance(obj.get('clusters'),list) or len(obj.get('proposals',[])) != 3:
@@ -100,6 +132,8 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
                 cluster.get('uncertainty') not in ('low','medium','high') or \
                 not all(isinstance(cluster.get(k),str) for k in ('label','attribution')):
             raise ValueError('Invalid cluster schema')
+        if cluster['attribution'].strip().lower() in ('low','medium','high'):
+            raise ValueError('Cluster attribution needs an explanation, not only a confidence level')
     actual_ids = {e['query_id'] for e in prompt['examples']}
     labels = {c['label'] for c in obj['clusters']}
     for cluster in obj['clusters']:
@@ -107,7 +141,8 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
             raise ValueError('Cluster cites a case absent from actual training input')
     for proposal in obj['proposals']:
         if proposal.get('basis') not in ('training_cases','parent_code','exploratory') or \
-                not isinstance(proposal.get('rationale'),str) or \
+                not all(isinstance(proposal.get(k),str) and proposal[k].strip()
+                        for k in ('rationale','mechanism','falsification_test')) or \
                 proposal.get('uncertainty') not in ('low','medium','high') or \
                 not isinstance(proposal.get('supporting_case_ids'),list) or \
                 not isinstance(proposal.get('supporting_cluster_labels'),list):
@@ -121,7 +156,8 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
     obj['input_chars'] = len(serialized)
     obj['diagnostic_example_count'] = len(prompt['examples'])
     obj['diagnostic_case_ids'] = [e['query_id'] for e in prompt['examples']]
-    obj['rationale_schema'] = 'evidence-v2'
+    obj['rationale_schema'] = 'evidence-v3'
+    obj['prompt_version'] = 'explore-v1'
     obj['rationale_status'] = 'model_reported_hypotheses_not_verified_causes'
     return obj
 
@@ -149,6 +185,11 @@ Filesystem access is read-only and limited to installed runtime libraries; no pr
 network or process control. Use passed historical records as data. Do not modify the actor/evaluator,
 produce answers, or embed reference answers, patient-specific constants, or evaluation questions.
 The trusted parent is baseline host code; implement the same three public entrypoints with your own design.'''
+    instruction += '''
+Implement the proposal's mechanism faithfully, including substantial internal redesign when proposed.
+The starter and parent are interface references, not architectural templates to preserve.
+Return the complete executable module in one JSON object; do not abbreviate with ellipses,
+omit helper implementations, or return a diff. Do not add unrelated behavior changes just to be novel.'''
 
     response = client.complete([{'role':'system','content':instruction},
                                 {'role':'user','content':json.dumps({'proposal':proposal,'parent_code':parent_code,

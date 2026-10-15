@@ -30,6 +30,8 @@ class FixtureClient:
             result={'clusters':[{'label':'fixture','case_ids':[],'attribution':'synthetic protocol test','uncertainty':'high'}],
                     'proposals':[{'direction':f'fixture-{i}','hypothesis':'protocol check','prediction':'runs','risk':'not research evidence',
                                   'basis':'exploratory','rationale':'synthetic protocol test only',
+                                  'mechanism':'synthetic interface-preserving implementation',
+                                  'falsification_test':'fixture replay fails the expected interface or answer checks',
                                   'supporting_case_ids':[], 'supporting_cluster_labels':[],
                                   'uncertainty':'high'} for i in range(3)]}
         elif role == 'codegen':

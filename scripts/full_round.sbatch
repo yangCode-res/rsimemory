@@ -100,6 +100,11 @@ echo replay_running > "$META/status"
 echo MODEL_READY_FULL_REPLAY_START
 setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   --base-url http://127.0.0.1:7862/v1 \
+  --reflexion-max-tokens "${RSI_REFLEXION_MAX_TOKENS:-8192}" \
+  --codegen-max-tokens "${RSI_CODEGEN_MAX_TOKENS:-16384}" \
+  --reflexion-temperature "${RSI_REFLEXION_TEMPERATURE:-0.7}" \
+  --codegen-temperature "${RSI_CODEGEN_TEMPERATURE:-0.4}" \
+  --optimizer-timeout-s "${RSI_OPTIMIZER_TIMEOUT_S:-900}" \
   --semantic-model-path "$ROOT/models/bge-small-zh-v1.5" --evolve &
 CLI_PID=$!
 (

@@ -8,7 +8,9 @@ CLI 自动在运行目录写入 `traces.jsonl`。记录器使用标准库，不�
 
 一轮运行记录父版本、实际送入 Reflexion 的受限诊断输入、Reflexion 和代码生成的实际模型请求及响应、三个 proposal、候选代码和结果。每题独立 trace，带有 policy、fold、检查点、题型与原始运行的关联；工具 search/read、模型调用与评分为子 observation。模型截断也保留服务端返回的原始响应。
 
-新 proposal 使用 `evidence-v2`：`basis` 为 `training_cases`、`parent_code` 或 `exploratory`，并报告 `rationale`、`supporting_case_ids`、`supporting_cluster_labels`、`uncertainty`。案例引用只能指向实际诊断输入中的训练案例；聚类引用只能指向本次返回的标签。代码检查和探索性提案允许空案例引用。这些字段提高可追溯性，不限制 policy 的实现方法。
+新 proposal 使用 `evidence-v3`：在 `evidence-v2` 的 `basis`、`rationale`、`supporting_case_ids`、`supporting_cluster_labels`、`uncertainty` 之外，增加 `mechanism` 和 `falsification_test`，分别说明操作机制和如何证伪。`basis` 为 `training_cases`、`parent_code` 或 `exploratory`。案例引用只能指向实际诊断输入中的训练案例；聚类引用只能指向本次返回的标签。代码检查和探索性提案允许空案例引用。这些字段提高可追溯性，不限制 policy 的实现方法。`explore-v1` 提示接收父版本活动配置和训练聚合指标，鼓励机制多样的结构性探索；无诊断对照不会收到训练指标、案例或干预结果。
+
+模型 generation 的 metadata 保存每次实际使用的 `max_tokens`、`temperature`、`timeout_s`，可区分反思和代码生成。当前默认分别是 8192/0.7 与 16384/0.4，超时均 900 秒。生成截断单独归档为 `generation_truncated`，原始响应仍可在 generation 的 Output 检查。
 
 记录包含任务上下文，留在超算。采集请求正文和模型输出，不记录 HTTP 密钥头。导入器默认只允许 loopback 目标。
 

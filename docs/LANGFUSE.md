@@ -51,3 +51,5 @@ CLI 自动在运行目录写入 `traces.jsonl`。记录器使用标准库，不�
 历史决策根 trace ID 为 `ac9f73e55556abd6462be8f4e27bebea`；完整导航在导入目录的 `index.json`，根 observation 仅放有限导航，避免超大单条请求。
 
 部署与本机 SSH 转发参见 [部署目录](../deploy/langfuse/README.md)。Langfuse 服务和数据库的运行状态、导入回执与浏览器可访问性应分别验证；代码测试通过不能替代部署验收。
+
+持久存储统一使用 `/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/observability/langfuse/`。软件原档、数据库、轨迹对象、配置与密钥都在该目录；`/tmp/rsi-langfuse-1035/` 仅承载可重建的软件缓存及 PID/socket。数据库迁移须停写、逐文件校验，并通过 v4 读取接口核对历史 observation ID。

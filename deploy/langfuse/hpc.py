@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Manage this account's loopback-only Langfuse stack in its own user namespace."""
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -12,8 +13,8 @@ import time
 from urllib.request import urlopen
 
 HERE = Path(__file__).resolve().parent
-DATA = Path(os.environ.get('LANGFUSE_DATA_ROOT',
-    '/persist_data/home/' + os.environ['USER'] + '/.local/share/memory-policy-rsi/langfuse'))
+DATA = Path(os.environ.get('LANGFUSE_DATA_ROOT', str(HERE.parent.parent / 'observability/langfuse')))
+RUNTIME = Path(os.environ.get('LANGFUSE_RUNTIME_DIR', '/tmp/rsi-langfuse-' + str(os.getuid())))
 PODMAN = DATA / 'runtime/usr/local/bin/podman'
 PREFIX = 'rsi-langfuse-'
 SERVICES = ('postgres', 'redis', 'minio', 'clickhouse', 'web', 'worker')
@@ -28,7 +29,7 @@ IMAGES = {
 
 
 def namespace_prefix():
-    pid = (DATA / 'state/podman-ns.pid').read_text().strip()
+    pid = (RUNTIME / 'state/podman-ns.pid').read_text().strip()
     cpus = ','.join(map(str, sorted(os.sched_getaffinity(0))[:4]))
     return ['taskset', '-c', cpus, 'nsenter', '--target', pid, '--user', '--mount',
             '--net', '--preserve-credentials']
@@ -37,7 +38,7 @@ def namespace_prefix():
 def engine(*args, check=True):
     command = namespace_prefix() + [
         'env', 'CONTAINERS_CONF=' + str(DATA / 'config/containers/containers.conf'),
-        'XDG_RUNTIME_DIR=' + str(DATA / 'run'),
+        'XDG_RUNTIME_DIR=' + str(RUNTIME / 'run'),
         'CONTAINERS_STORAGE_CONF=' + str(DATA / 'config/containers/storage.conf'),
         'PATH=' + str(DATA / 'runtime/usr/local/bin') + ':/usr/bin:/bin', str(PODMAN), *args]
     return subprocess.run(command, check=check, capture_output=True, text=True)
@@ -55,7 +56,13 @@ def process_alive(pid_file, expected):
 def ensure_namespace():
     if not PODMAN.exists():
         raise RuntimeError('Pinned Podman bundle is missing from ' + str(PODMAN.parent))
-    pid_file = DATA / 'state/podman-ns.pid'
+    RUNTIME.mkdir(mode=0o700, exist_ok=True)
+    if RUNTIME.is_symlink() or RUNTIME.stat().st_uid != os.getuid():
+        raise RuntimeError('Runtime directory must belong to this account')
+    RUNTIME.chmod(0o700)
+    for name in ('state','run'):
+        (RUNTIME / name).mkdir(mode=0o700, exist_ok=True)
+    pid_file = RUNTIME / 'state/podman-ns.pid'
     if process_alive(pid_file, 'namespace.sh'):
         return
     cpus = ','.join(map(str, sorted(os.sched_getaffinity(0))[:4]))
@@ -72,10 +79,10 @@ def ensure_namespace():
 def ensure_bridges():
     for inner in (True, False):
         name = 'bridge-inner' if inner else 'bridge-outer'
-        pid_file = DATA / 'state' / (name + '.pid')
+        pid_file = RUNTIME / 'state' / (name + '.pid')
         if process_alive(pid_file, str(HERE / 'bridge.py')):
             continue
-        command = [sys.executable, str(HERE / 'bridge.py'), '--data', str(DATA)]
+        command = [sys.executable, str(HERE / 'bridge.py'), '--data', str(RUNTIME)]
         if inner:
             command = namespace_prefix() + command + ['--inner']
         with open(DATA / 'logs' / (name + '.log'), 'ab') as log:
@@ -138,11 +145,40 @@ def launch(name):
         return
     # Only remove this launcher's stopped container; never touch another stack.
     engine('rm', PREFIX + name, check=False)
-    config = json.loads(engine('image', 'inspect', IMAGES[name]).stdout)[0]['Config']
-    source = Path(engine('image', 'mount', IMAGES[name]).stdout.strip())
-    rootfs = DATA / 'rootfs' / name
-    copy_marker = DATA / 'state' / ('rootfs-' + name + '.ready')
-    if not (rootfs / '.rsi-copy-complete').exists() and not copy_marker.exists():
+    archive = DATA / 'images' / (name + '.rootfs.tar')
+    rootfs = (RUNTIME if archive.exists() else DATA) / 'rootfs' / name
+    copy_marker = (RUNTIME if archive.exists() else DATA) / 'state' / ('rootfs-' + name + '.ready')
+    metadata_file = DATA / 'config/images' / (name + '.json')
+    ready = copy_marker.exists() if archive.exists() else (
+        (rootfs / '.rsi-copy-complete').exists() or copy_marker.exists())
+    if (ready or archive.exists()) and metadata_file.exists():
+        metadata = json.loads(metadata_file.read_text())
+        if metadata.get('image_id') != IMAGES[name]:
+            raise RuntimeError('Cached rootfs image identity mismatch for ' + name)
+        config = metadata['config']
+    else:
+        config = json.loads(engine('image', 'inspect', IMAGES[name]).stdout)[0]['Config']
+    if archive.exists() and ready:
+        ready = copy_marker.read_text()==metadata.get('rootfs_sha256')
+    if archive.exists() and not ready:
+        expected = metadata.get('rootfs_sha256')
+        digest = hashlib.sha256()
+        with archive.open('rb') as stream:
+            for block in iter(lambda:stream.read(1024*1024),b''):
+                digest.update(block)
+        if not expected or digest.hexdigest()!=expected:
+            raise RuntimeError('Rootfs archive checksum mismatch for ' + name)
+        if rootfs.exists():
+            for directory,_,_ in os.walk(rootfs):
+                path=Path(directory);path.chmod(stat.S_IMODE(path.stat().st_mode)|stat.S_IRWXU)
+            shutil.rmtree(rootfs)
+        rootfs.mkdir(parents=True,mode=0o700)
+        subprocess.run(['tar','--extract','--no-same-owner','--file',str(archive),
+                        '--directory',str(rootfs)],check=True)
+        private_file(copy_marker,expected)
+        ready=True
+    if not ready:
+        source = Path(engine('image', 'mount', IMAGES[name]).stdout.strip())
         if rootfs.exists():
             # Resume only this launcher's incomplete image copy; source images stay intact.
             for directory, _, _ in os.walk(rootfs):
@@ -167,6 +203,8 @@ def launch(name):
                 if target.exists():
                     target.chmod(mode)
         private_file(copy_marker, IMAGES[name])
+    if not archive.exists():
+        private_file(metadata_file, json.dumps({'image_id':IMAGES[name], 'config':config}))
     uid = {'postgres': 999, 'redis': 999, 'minio': 65532, 'clickhouse': 101,
            'web': 1001, 'worker': 1001}[name]
     env = environment()

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-DATA_ROOT="${LANGFUSE_DATA_ROOT:-$HOME/.local/share/memory-policy-rsi/langfuse}"
+PROJECT_ROOT="$(cd -- "$HERE/../.." && pwd)"
+DATA_ROOT="${LANGFUSE_DATA_ROOT:-$PROJECT_ROOT/observability/langfuse}"
 ENV_FILE="$DATA_ROOT/.env"
 COMPOSE_FILE="$HERE/compose.yaml"
 

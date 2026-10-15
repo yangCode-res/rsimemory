@@ -6,21 +6,23 @@
 
 当前账号没有 Docker 管理员权限，也没有 subordinate UID/GID 段。使用已校验的静态 Podman 5.8.4、当前账号自己的 user/mount/network namespace 和单 UID/GID 映射启动，不需要 root。所有容器共享账号自己的隔离网络，在其中监听回环地址。`bridge.py` 通过私有 UNIX socket，仅将网页 3000 与对象存储 9092 转发至宿主 `127.0.0.1`。本机再通过 SSH 访问，不公开数据库端口。
 
-镜像已按 `image-lock.json` 中的官方 amd64 摘要取得；Docker Hub 网络较慢时使用 `docker.m.daocloud.io` 拉取同一摘要。容器使用本地 VFS 镜像的独立 rootfs 副本，避免单 UID 下自动复制其他文件所有者失败。宿主账号始终是 `juanliu`，不授予其他宿主 UID 的权限。
+镜像已按 `image-lock.json` 中的官方 amd64 摘要取得；服务软件归档保存为 `images/*.rootfs.tar`，镜像配置及归档 SHA256 缓存于 `config/images/` 并绑定镜像 ID。迁移后无需读取旧镜像仓库；启动时校验归档，在 `/tmp/rsi-langfuse-1035/rootfs/` 解压为可重建的软件缓存。宿主账号始终是 `juanliu`，不授予其他宿主 UID 的权限。
 
-运行时、数据库、镜像和密钥位于本地 ext4：
+持久数据库、服务软件归档、静态运行时、日志和密钥统一放在共享持久存储：
 
 ```text
-/persist_data/home/juanliu/.local/share/memory-policy-rsi/langfuse/
+/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/observability/langfuse/
   .env                # 0600，初始化账号、项目 API keys、数据库密钥
   runtime/            # 已安装的静态 Podman bundle
-  graphroot/          # 镜像存储
-  rootfs/             # 每个服务的独立副本
+  graphroot/          # 新容器引擎的元数据；不依赖旧镜像中间层
+  images/             # 六个服务的私有软件归档，SHA256 绑定镜像 ID
   data/               # 数据库和对象存储
   config/             # 私有服务 env 文件、Redis 配置
-  state/              # namespace 和 bridge PID/socket
+  state/              # 保留状态目录；活动进程状态在 /tmp
   logs/               # 每个服务的日志
 ```
+
+namespace/bridge 的 PID、UNIX socket、Podman runroot 和软件解压缓存放在权限 0700 的 `/tmp/rsi-langfuse-1035/`，可在重启后重建；此目录不保存数据库或用户轨迹。服务的软件原档和全部持久数据均在 `/file_storage01`。
 
 启动器将新启动进程的 CPU affinity 限定到四个可用 CPU；ClickHouse 服务器内存上限 4 GiB，查询四线程、单查询内存 2 GiB；Node heap 上限每进程 2 GiB。未启用宿主 cgroups 管理，这些设置不构成整个栈的总 RSS 硬限制。遥测已关闭；隔离网络不配置外部出口，在线版本检查可能记录 DNS 失败，不影响轨迹入库。
 
@@ -39,7 +41,9 @@ python3 deploy/langfuse/hpc.py up web
 python3 deploy/langfuse/hpc.py stop
 ```
 
-首次启动的静态 runtime 和镜像已安装在上述本地目录。`up` 可复用它们，并在 namespace 进程失效时重新创建；当前没有安装系统级开机自启。宿主重启后需手动执行 `up` 并检查健康接口。`compose.yaml` 是有常规 Docker/Compose 环境时的配置参考，当前超算实例使用 `hpc.py`，不执行 `init.sh up`。
+静态 runtime 和服务软件归档已安装在上述持久目录。`up` 可复用它们，并在 namespace 进程失效时重新创建；当前没有安装系统级开机自启。宿主重启后需手动执行 `up` 并检查健康接口。`compose.yaml` 是有常规 Docker/Compose 环境时的配置参考，当前超算实例使用 `hpc.py`，不执行 `init.sh up`。
+
+2026-10-15 已停止旧服务后迁移数据库与对象存储，10,820 个文件共 465,171,072 字节的 SHA256 与源文件全部一致。新实例的六个服务均已启动，持久数据挂载全部指向上述 `/file_storage01` 目录；历史运行的 4,615 个 observation、4,608 个问题记录逐 ID 复核一致。旧存储上的服务与辅助进程已停用，旧副本暂留备份，不再作为运行目录。迁移核对回执保存在项目 `runs/langfuse-storage-migration-20261015.json`，不包含轨迹正文。
 
 ## 在电脑上访问
 

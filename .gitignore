@@ -9,3 +9,4 @@ deploy/langfuse/.env.*
 deploy/langfuse/credentials*
 observability-runtime/
 observability-images/
+observability/

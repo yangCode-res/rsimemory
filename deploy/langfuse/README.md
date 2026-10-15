@@ -1,0 +1,67 @@
+# 超算 Langfuse 部署
+
+2026-10-15 已在 `chaosuan` 的 `choud-mgt-09` 部署 Langfuse **v4.59.0 OSS**。网页、worker、PostgreSQL、ClickHouse、Redis、MinIO 六个服务均已启动；本机 SSH 隧道访问网页健康接口和对象存储健康接口均为 200。
+
+## 实际运行方式
+
+当前账号没有 Docker 管理员权限，也没有 subordinate UID/GID 段。使用已校验的静态 Podman 5.8.4、当前账号自己的 user/mount/network namespace 和单 UID/GID 映射启动，不需要 root。所有容器共享账号自己的隔离网络，在其中监听回环地址。`bridge.py` 通过私有 UNIX socket，仅将网页 3000 与对象存储 9092 转发至宿主 `127.0.0.1`。本机再通过 SSH 访问，不公开数据库端口。
+
+镜像已按 `image-lock.json` 中的官方 amd64 摘要取得；Docker Hub 网络较慢时使用 `docker.m.daocloud.io` 拉取同一摘要。容器使用本地 VFS 镜像的独立 rootfs 副本，避免单 UID 下自动复制其他文件所有者失败。宿主账号始终是 `juanliu`，不授予其他宿主 UID 的权限。
+
+运行时、数据库、镜像和密钥位于本地 ext4：
+
+```text
+/persist_data/home/juanliu/.local/share/memory-policy-rsi/langfuse/
+  .env                # 0600，初始化账号、项目 API keys、数据库密钥
+  runtime/            # 已安装的静态 Podman bundle
+  graphroot/          # 镜像存储
+  rootfs/             # 每个服务的独立副本
+  data/               # 数据库和对象存储
+  config/             # 私有服务 env 文件、Redis 配置
+  state/              # namespace 和 bridge PID/socket
+  logs/               # 每个服务的日志
+```
+
+启动器将新启动进程的 CPU affinity 限定到四个可用 CPU；ClickHouse 服务器内存上限 4 GiB，查询四线程、单查询内存 2 GiB；Node heap 上限每进程 2 GiB。未启用宿主 cgroups 管理，这些设置不构成整个栈的总 RSS 硬限制。遥测已关闭；隔离网络不配置外部出口，在线版本检查可能记录 DNS 失败，不影响轨迹入库。
+
+## 启停和状态
+
+在超算项目根目录运行：
+
+```sh
+cd /file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi
+python3 deploy/langfuse/hpc.py status
+python3 deploy/langfuse/hpc.py up
+# 可指定单个服务，例如 web、worker、clickhouse
+python3 deploy/langfuse/hpc.py stop web
+python3 deploy/langfuse/hpc.py up web
+# 停止六个容器，保留数据与 namespace/bridge 辅助进程
+python3 deploy/langfuse/hpc.py stop
+```
+
+首次启动的静态 runtime 和镜像已安装在上述本地目录。`up` 可复用它们，并在 namespace 进程失效时重新创建；当前没有安装系统级开机自启。宿主重启后需手动执行 `up` 并检查健康接口。`compose.yaml` 是有常规 Docker/Compose 环境时的配置参考，当前超算实例使用 `hpc.py`，不执行 `init.sh up`。
+
+## 在电脑上访问
+
+已建立本机 3000/9092 的 SSH 隧道。如隧道断开，在电脑终端重新执行并保持运行：
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:3000:127.0.0.1:3000 \
+  -L 127.0.0.1:9092:127.0.0.1:9092 chaosuan
+```
+
+打开 <http://localhost:3000>。已初始化组织 `rsi-memory`、项目 `memory-policy-rsi`，账号为 `rsi-admin@rsi.local`；密码在服务器私有 `.env` 的 `LANGFUSE_INIT_USER_PASSWORD`，也已单独保存到电脑项目的 `runs/langfuse-access/login.txt`。API keys 留在服务器，不加入版本库。
+
+此次创建的后台 SSH control socket 是 `/private/tmp/rsi-langfuse-ssh-control`；停止该隧道可执行 `ssh -S /private/tmp/rsi-langfuse-ssh-control -O exit chaosuan`，不会停止服务器容器。
+
+## 已验证的轨迹
+
+历史运行 146133 的导入目录为 `runs/langfuse-backfill-146133-v2/`。导入回执接受 4615 个 observation；进一步通过 **v4 Observations API v2** 分页读取，对照原始 ID，确认 4615 个唯一 observation、4609 条 trace、4608 个问题记录完全匹配，缺失和多余均为零。核对结果在该目录的 `verification.json`。另外导入了明确标记 fixture 的 240 个合成 observation 验证新进化闭环；不能将它们当成真实实验成绩。
+
+历史决策树与反思：
+
+- <http://localhost:3000/project/memory-policy-rsi/traces/ac9f73e55556abd6462be8f4e27bebea>
+- <http://localhost:3000/project/memory-policy-rsi/traces/ac9f73e55556abd6462be8f4e27bebea?observation=5b0a9aaa3b2b2b6a>
+
+树中包括 `diagnostic_bundle`、`reflection`、三个 `codegen` 与 `validation_and_cost_summary`。候选区分信息在 observation metadata 的 `policy`。历史时间轴是导入时间，不代表原始运行耗时；旧提案没有明确案例归因的部分标记未记录。详见 [轨迹说明](../../docs/LANGFUSE.md)。

@@ -1,0 +1,41 @@
+{
+  "platform": "linux/amd64",
+  "images": [
+    {
+      "source": "docker.langfuse.com/langfuse/langfuse:4",
+      "manifestDigest": "sha256:48ecae32cd74d3a567588602c144de0ec626daf32dc5f2e831a03cebd0bb2d34",
+      "platformDigest": "sha256:cee4fce72336daca27d224f35bc2431e302b045f5ab7e1b0c6c876a47e340b36",
+      "sizeBytes": 293573608
+    },
+    {
+      "source": "docker.langfuse.com/langfuse/langfuse-worker:4",
+      "manifestDigest": "sha256:246a3a0fab57810734080d302492aa99d7ed0b6acc909c84b58832074b564175",
+      "platformDigest": "sha256:1bb9b0176ad7917202aab4cb6ae5452f783c32bbfbe4bf5489390bbdda546fc1",
+      "sizeBytes": 367733342
+    },
+    {
+      "source": "docker.io/clickhouse/clickhouse-server:25.12",
+      "manifestDigest": "sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6",
+      "platformDigest": "sha256:8ecb92fa564142a2bad5fef7b39f89af7265ddbfd782693b15f002ca0f70be14",
+      "sizeBytes": 246670791
+    },
+    {
+      "source": "docker.io/library/postgres:17",
+      "manifestDigest": "sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3",
+      "platformDigest": "sha256:3cec7eb015ba8adb28139fa5c83b8489cdf0e666e53dfdf20f598ae0cc8739e3",
+      "sizeBytes": 161335873
+    },
+    {
+      "source": "docker.io/library/redis:7",
+      "manifestDigest": "sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85",
+      "platformDigest": "sha256:cd745595f143052dd6a743bc5651d3ce4b03979fe5c99c7fcfab73461f6f217b",
+      "sizeBytes": 45896305
+    },
+    {
+      "source": "cgr.dev/chainguard/minio:latest",
+      "manifestDigest": null,
+      "platformDigest": "sha256:8d66c6b9ce8996091d841d768a88b4255faf0c25fa8de257d832ea4c27d08395",
+      "sizeBytes": null
+    }
+  ]
+}

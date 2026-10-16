@@ -40,7 +40,7 @@ stop_group() {
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
-  [[ -z "$MON_PID" ]] || { kill "$MON_PID" 2>/dev/null || true; wait "$MON_PID" 2>/dev/null || true; }
+  stop_group "$MON_PID"
   [[ -z "$COPY_PID" ]] || { kill "$COPY_PID" 2>/dev/null || true; wait "$COPY_PID" 2>/dev/null || true; }
   stop_group "$CLI_PID"
   stop_group "$PID"
@@ -90,9 +90,10 @@ export PORT=7862 HOST=127.0.0.1 TP_SIZE=2
 setsid bash "$CODE/scripts/launch_sglang_local.sh" > "$ARTIFACTS/server.log" 2>&1 &
 PID=$!
 ready=0
-for ((i=0;i<180;i++)); do
+startup_deadline=$((SECONDS + 1800))
+while ((SECONDS < startup_deadline)); do
   kill -0 "$PID" 2>/dev/null || { echo SERVER_FAILED; exit 1; }
-  if curl -fs --max-time 3 http://127.0.0.1:7862/health >/dev/null; then ready=1; break; fi
+  if curl -fsS --connect-timeout 3 --max-time 30 http://127.0.0.1:7862/health >/dev/null; then ready=1; break; fi
   sleep 10
 done
 [[ "$ready" == 1 ]] || { echo SERVER_TIMEOUT; exit 1; }
@@ -107,18 +108,9 @@ setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   --optimizer-timeout-s "${RSI_OPTIMIZER_TIMEOUT_S:-900}" \
   --semantic-model-path "$ROOT/models/bge-small-zh-v1.5" --evolve &
 CLI_PID=$!
-(
-  while kill -0 "$CLI_PID" 2>/dev/null; do
-    if ! kill -0 "$PID" 2>/dev/null || ! curl -fs --max-time 5 http://127.0.0.1:7862/health >/dev/null; then
-      echo unavailable > "$META/service-status"
-      echo MODEL_SERVICE_UNAVAILABLE_STOPPING_REPLAY
-      # CLI handles TERM through the existing failed-progress cleanup.
-      kill -TERM -- "-$CLI_PID" 2>/dev/null || true
-      exit 1
-    fi
-    sleep 10
-  done
-) &
+setsid "$PY" "$CODE/scripts/service_monitor.py" \
+  --server-pid "$PID" --client-pid "$CLI_PID" --meta-dir "$META" \
+  --timeout-s 30 --interval-s 10 --threshold 3 --grace-s 120 &
 MON_PID=$!
 set +e
 wait "$CLI_PID"

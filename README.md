@@ -52,4 +52,6 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 
 `explore-v1` 反思提示以全任务 AVG/成本前沿为目标，允许替换记忆组织、索引、检索和 ingest 内部的更新/遗忘机制，不奖励低风险或最小改动；三个候选需探索不同机制，在有合理假设时包括结构性重构。输入增加父版本实际启用的配置和训练聚合指标，防止围绕未启用模块推断瓶颈。`evidence-v3` 提案在理由和证据引用之外记录 `mechanism`、`falsification_test`，取消每字段 150 字符限制。选出的四个失败与两个成功案例不再被外层列表隐式裁为五个，仍受显式 24000 字符输入预算约束。
 
+2026-10-19 的 `explore-v2` 修复父代码打包遗漏：初始父策略使用 `standalone-baseline-v1`，携带实际 imports、传递依赖（含 `_grams`）和 initialize/ingest/search 入口，可在独立隔离 worker 内执行。新运行记录 `parent-policy.py`、`parent-source.json` 及 config 源码 SHA256；反思与代码生成均获得完整父代码、实际语言和基线分词说明。允许采用其他分词、索引或记忆结构，不增加实现形式白名单。历史候选的分词修复另存有父 commit 的独立策略，不覆盖原运行，也不作为新生成的 RSI 成果。
+
 `finish_reason=length` 归档为 `generation_truncated`，保留实际模型响应与 token 用量，不再误记为契约错误；不完整代码不进入 replay。本次变更只作用于新运行，历史结果及 Langfuse 导入记录保持原样；参数与提示的调整本身不代表真实性能已改善。

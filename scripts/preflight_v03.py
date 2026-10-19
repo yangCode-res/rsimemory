@@ -89,6 +89,7 @@ class PreflightFailure(RuntimeError):
 
 def _validate_worker() -> dict[str, str]:
     from rsi.policy import GeneratedPolicy
+    from rsi.policy_source import baseline_source
 
     chunk = {
         "id": SYNTHETIC_ID,
@@ -113,10 +114,18 @@ def _validate_worker() -> dict[str, str]:
     after_restore = restored.search("synthetic probe", {"persona_id": 0, "checkpoint": 1})
     if after_restore != expected:
         raise PreflightFailure("worker_snapshot_restore_failed")
+    parent = GeneratedPolicy(baseline_source(), {'top_k':1, 'semantic_weight':0}, timeout_s=60)
+    for sid, text in ((1, '青松片引起皮疹后停用'), (2, '今天安排饮食运动')):
+        parent.ingest({'id':f'parent-synthetic-{sid}', 'persona_id':0,
+                       'session_id':sid, 'text':text})
+    found = parent.search('青松片皮疹停用', {'persona_id':0, 'checkpoint':2})
+    if not found or found[0]['id'] != 'parent-synthetic-1':
+        raise PreflightFailure('complete_parent_chinese_retrieval_failed')
     return {
         "object_state": "ok",
         "repeat_search_mutation_isolation": "ok",
         "snapshot_restore": "ok",
+        "complete_parent_chinese_retrieval": "ok",
     }
 
 

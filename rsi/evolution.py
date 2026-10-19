@@ -63,7 +63,7 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
     if not with_diagnosis:
         context.pop('parent_train_metrics',None)
     prompt = {'task': 'Improve memory-policy AVG across all task families under measured costs; answering system is frozen.',
-              'prompt_version':'explore-v1',
+              'prompt_version':'explore-v2',
               'parent_code': parent_code, 'parent_context':context, 'examples': [],
               'interventions': compact_example(interventions) if with_diagnosis else [],
               'diagnostic_excerpts': True,
@@ -82,7 +82,11 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
                   'exploratory with high uncertainty instead of inventing evidence. Do not prefer low risk, few changed lines, '
                   'or memory savings over the AVG/cost frontier. Connect changes to observed memory failures when evidence permits. '
                   'Check active_parent_config before targeting a code path: dormant optional embedding code is not evidence '
-                  'of an active cache bottleneck. Cost-only proposals need a relevant measured bottleneck or must be '
+                  'of an active cache bottleneck. The standalone parent includes its imports, text-processing helpers '
+                  'and entrypoints. Use the declared workload language and actual helper behavior when diagnosing '
+                  'retrieval; Chinese text need not contain word-separating spaces. Alternative tokenizers and '
+                  'representations remain allowed; preserve useful evidence retrieval when redesigning internals. '
+                  'Cost-only proposals need a relevant measured bottleneck or must be '
                   'explicitly exploratory. Describe the operational mechanism and a falsification test.',
               'constraints': 'Return exactly three distinct proposals. If no reliable failure attribution exists, say so. '
                              'Do not insert references or answers into policy code. Changes only affect memory state and retrieval. '
@@ -157,20 +161,20 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
     obj['diagnostic_example_count'] = len(prompt['examples'])
     obj['diagnostic_case_ids'] = [e['query_id'] for e in prompt['examples']]
     obj['rationale_schema'] = 'evidence-v3'
-    obj['prompt_version'] = 'explore-v1'
+    obj['prompt_version'] = 'explore-v2'
     obj['rationale_status'] = 'model_reported_hypotheses_not_verified_causes'
     return obj
 
 
-def generate(client, proposal, parent_code):
+def generate(client, proposal, parent_code, policy_context=None):
     with trace_span('codegen', input={'proposal':proposal}, metadata={'role':'codegen'}) as observation:
-        source, cost = _generate(client, proposal, parent_code)
+        source, cost = _generate(client, proposal, parent_code, policy_context)
         observation.update(output={'source':source, 'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
                                    'cost':cost})
         return source, cost
 
 
-def _generate(client, proposal, parent_code):
+def _generate(client, proposal, parent_code, policy_context=None):
     instruction = '''Produce a standalone normal Python memory-policy module. Return JSON {"code":"..."}.
 Provide callable initialize(config), ingest(state,session), search(state,query,filters).
 Normal Python classes, helpers, lambdas, annotations, exceptions, comprehensions, decorators, default
@@ -190,10 +194,17 @@ Implement the proposal's mechanism faithfully, including substantial internal re
 The starter and parent are interface references, not architectural templates to preserve.
 Return the complete executable module in one JSON object; do not abbreviate with ellipses,
 omit helper implementations, or return a diff. Do not add unrelated behavior changes just to be novel.'''
+    instruction += '''
+The supplied parent is standalone and includes its actual imports and helper functions.
+Use runtime_context to understand the language and active configuration. Chinese text may have no
+word-separating spaces; preserve useful partial-fact retrieval when changing text processing.
+Alternative tokenization, indexing and memory representations are allowed; no specific tokenizer
+or baseline architecture is mandatory.'''
 
     response = client.complete([{'role':'system','content':instruction},
                                 {'role':'user','content':json.dumps({'proposal':proposal,'parent_code':parent_code,
-                                                                   'legal_starter':PARENT_CODE},ensure_ascii=False)}],
+                                                                   'legal_starter':PARENT_CODE,
+                                                                   'runtime_context':dict(policy_context or {})},ensure_ascii=False)}],
                                role='codegen',json_mode=True)
     obj = json.loads(response['text']); code = obj.get('code')
     cost = {k: response[k] for k in ['usage','latency_s','role']}

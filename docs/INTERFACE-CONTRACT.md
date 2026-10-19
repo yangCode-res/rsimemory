@@ -131,3 +131,5 @@ Landlock/seccomp 初始化失败、快照解码异常、候选异常、超时、
 在线 ReAct 的固定 `search/read` 结构、只返回宿主登记的原文 ID、患者与检查点范围、gold/future 隔离、检查点同快照及问题间独立性继续有效。当前证据查询只读：每次 `search` 恢复独立副本并丢弃，只有 `ingest` 会生成新持久状态版本。Mixed 尚未接入、no-diagnosis 对照及其他既有实验限制沿用对应运行配置和历史记录，不由本协议更新推断其已完成。
 
 2026-10-19 增加报告 schema `strict-plus-e2e-v1`，不改变 policy v0.3 接口和冻结 ReAct。新增 `E2E_AVG`、`e2e_type_accuracy`、`abnormal_rate`、`counts.unanswered_as_zero` 与 `counts.e2e_unscorable`。仅 `actor_failed` 且分数为 null 作为未作答计 0，原逐题分数及严格 AVG 不改；judge/非法分数等不可判定项仍使 E2E 不可用，缺类同样不可比较。补充指标不替换现有自动选择规则。新运行将指标版本冻结在 config，历史补算单独留档并记录实现版本和来源哈希。
+
+同日将优化器提示升级为 `explore-v2`：初始父代码打包格式为 `standalone-baseline-v1`，必须包含可执行入口、模块级 helpers 及实际 imports，不能仅提供类定义。宿主从受信基线模块跟踪静态依赖，生成候选的后续父版本直接使用其完整源码 artifact。新运行保存 `parent-policy.py`、`parent-source.json`，并冻结 `parent_source_version` 和 `parent_source_sha256`。实际语言、基线分词行为及启用配置送入两个优化器阶段；这属于完整上下文和版本修复，不要求候选沿用某种 tokenizer 或架构，不更改冻结 actor/judge 和 policy 入口。

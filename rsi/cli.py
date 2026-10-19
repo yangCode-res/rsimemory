@@ -2,7 +2,6 @@
 from __future__ import annotations
 import argparse
 import hashlib
-import inspect
 import json
 import math
 import signal
@@ -16,6 +15,7 @@ from .evolution import reflect, generate, new_node, backprop, pareto
 from .fixtures import FixtureClient, dataset as fixture_dataset
 from .model import ModelClient, ModelServiceUnavailable
 from .policy import PlainPolicy, GeneratedPolicy
+from .policy_source import baseline_source, source_manifest, SOURCE_VERSION
 from .runtime import replay, dump, intervention, call_cost
 from .tracing import trace_run, trace_span, write_failure_count
 
@@ -105,7 +105,8 @@ def main():
         'codegen':{'max_tokens':args.codegen_max_tokens,'temperature':args.codegen_temperature,
                    'timeout_s':args.optimizer_timeout_s}}
     config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v3'
-    config['evolution_prompt_version']='explore-v1'
+    config['evolution_prompt_version']='explore-v2'
+    config['parent_source_version']=SOURCE_VERSION
     config['python_version']=sys.version.split()[0]
     try: config['cloudpickle_version']=version('cloudpickle')
     except PackageNotFoundError: config['cloudpickle_version']=None
@@ -148,9 +149,13 @@ def main():
 
 
 def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer):
+    root_code=baseline_source()
+    parent_manifest=source_manifest(root_code, config['language'])
+    config['parent_source_sha256']=parent_manifest['sha256']
     dump(out/'config.json',config);dump(out/'splits.json',split);dump(out/'run_patients.json',run_ids)
     dump(out/'config-hash.json',{'sha256':hashlib.sha256(json.dumps(config,sort_keys=True).encode()).hexdigest()})
-    root_code=inspect.getsource(PlainPolicy)
+    (out/'parent-policy.py').write_text(root_code)
+    dump(out/'parent-source.json',parent_manifest)
     root_commit=commit_policy(out/'policy-git',root_code,'plain-bm25')
     tree={'algorithm':'MCTS/UCT single expansion','nodes':{'plain-bm25':new_node('plain-bm25')},'c':1.414}
     tree['nodes']['plain-bm25']['commit']=root_commit
@@ -181,6 +186,9 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
         try:
             context={'active_parent_config':{
                 'retrieval_mode':'lexical_bm25','semantic_weight':0.,
+                'language':config['language'],
+                'baseline_tokenization':parent_manifest['baseline_tokenization'],
+                'parent_source_version':parent_manifest['version'],
                 'policy_auxiliary_model':config['policy_auxiliary_model'],
                 **{k:config[k] for k in ('top_k','max_steps','context_chars','chunk_chars','chunk_overlap')}},
                 'parent_train_metrics':{'comparison':comparison_metric(train),
@@ -210,7 +218,8 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
             try:
                 with trace_span('candidate.codegen', metadata={'policy':name, 'parent_policy':'plain-bm25'},
                                 input={'proposal':proposal}) as observation:
-                    source,cost=generate(optimizer,proposal,root_code)
+                    source,cost=generate(optimizer,proposal,root_code,
+                                         policy_context=context['active_parent_config'])
                     observation.update(output={'source_sha256':hashlib.sha256(source.encode()).hexdigest()})
                 (branch/'policy.py').write_text(source);dump(branch/'codegen-cost.json',cost)
                 code_hash=hashlib.sha256(source.encode()).hexdigest()

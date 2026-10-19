@@ -87,6 +87,9 @@ def main():
     parser.add_argument('--candidate', choices=['candidate-1', 'candidate-2', 'candidate-3'],
                         default='candidate-3')
     parser.add_argument('--no-rerank-control', action='store_true')
+    parser.add_argument('--policy-source', type=Path,
+                        help='Validate an independent repaired artifact against historical inputs')
+    parser.add_argument('--supplied-source-only', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     os.sched_setaffinity(0, set(sorted(os.sched_getaffinity(0))[:4]))
@@ -99,7 +102,8 @@ def main():
     if args.output.resolve().is_relative_to(immutable.resolve()):
         raise ValueError('Diagnostics must be outside the original archive')
     config = json.loads((root / 'config.json').read_text())
-    source = (root / 'branches' / args.candidate / 'policy.py').read_text()
+    source_path = args.policy_source or (root / 'branches' / args.candidate / 'policy.py')
+    source = source_path.read_text()
     rows = [json.loads(line) for line in
             (root / 'branches' / args.candidate / 'validation/answers.jsonl').open()]
     by_patient = defaultdict(list)
@@ -140,6 +144,10 @@ def main():
                 'candidate_character_bigrams', 'plain_bm25_same_queries')
     if args.no_rerank_control:
         variants = tuple(v for v in variants if v != 'candidate_rerank_disabled')
+    if args.supplied_source_only:
+        if args.policy_source is None:
+            raise ValueError('Supplied-source validation requires --policy-source')
+        variants = ('candidate_supplied_source','plain_bm25_same_queries')
     metrics = {variant: defaultdict(list) for variant in variants}
     detail = []
     started = time.monotonic()
@@ -216,6 +224,7 @@ def main():
                    for k,vals in metrics.items()} for v,metrics in values.items()}
     report = {'scope':'retrieval_diagnosis_only_no_answer_rescoring',
               'candidate':args.candidate, 'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
+              'independent_source':args.policy_source is not None,
               'selection':'all queries at fifth of ten validation checkpoints per patient',
               'patients':len(selected), 'questions':len(chosen_ids),
               'variants':compact(metrics),

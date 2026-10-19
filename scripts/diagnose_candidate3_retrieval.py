@@ -1,7 +1,7 @@
 """Server-only retrieval ablation; never export clinical records or policy source.
 
 Use one fixed middle checkpoint per validation patient, all its questions,
-and the exact first successful search input recorded for candidate-3.
+and the exact first successful search input recorded for the selected candidate.
 No model calls, test split access, answer scoring or candidate selection.
 """
 from __future__ import annotations
@@ -10,6 +10,7 @@ import argparse
 import ast
 from collections import defaultdict
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,10 @@ from rsi.policy import GeneratedPolicy, PlainPolicy
 def instrument(source, character_tokens=False):
     tree = ast.parse(source)
     functions = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
-    tokenizer = functions[0]
+    tokenizers = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+                  and 'gram' in n.name.lower()]
+    assert len(tokenizers) == 1, 'Unexpected tokenizer structure'
+    tokenizer = tokenizers[0]
     if character_tokens:
         replacement = ast.parse('''
 def replacement(text):
@@ -36,17 +40,23 @@ def replacement(text):
 ''').body[0]
         replacement.name = tokenizer.name
         tree.body[tree.body.index(tokenizer)] = replacement
-    search = functions[13]
-    sorts = [n for n in search.body if isinstance(n, ast.Assign)
-             and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name)
-             and n.value.func.id == 'sorted']
-    assert len(sorts) == 2, 'Unexpected policy structure'
-    first = sorts[0]
-    key = next(k.value for k in first.value.keywords if k.arg == 'key')
-    score_variable = key.body.elts[0].func.value.id
-    probe = ast.parse('print("DIAG_ZERO_BM25", int(not any(' + score_variable + '.values())))').body
-    position = search.body.index(first)
-    search.body[position:position] = probe
+    scorers = [n for n in functions if 'score' in n.name.lower()
+               and any(term in n.name.lower() for term in ('lexical', 'bm25'))]
+    assert len(scorers) == 1, 'Unexpected lexical scorer structure'
+
+    class NumericProbe(ast.NodeTransformer):
+        def visit_Return(self, node):
+            if node.value is None:
+                return node
+            statement = ast.parse('''
+_diagnostic_scores = None
+print("DIAG_ZERO_BM25", int(not any(_diagnostic_scores.values())))
+return _diagnostic_scores
+''').body
+            statement[0].value = node.value
+            return statement
+
+    NumericProbe().visit(scorers[0])
     # Bulk initialization invokes the exact original ingest in chronological
     # order, avoiding one sandbox launch and snapshot per source chunk.
     # It does not alter the candidate's data structures or update functions.
@@ -74,16 +84,24 @@ def main():
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--dataset', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--candidate', choices=['candidate-1', 'candidate-2', 'candidate-3'],
+                        default='candidate-3')
+    parser.add_argument('--no-rerank-control', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     os.sched_setaffinity(0, set(sorted(os.sched_getaffinity(0))[:4]))
     import pandas as pd
 
     root = args.run
+    if args.output.exists():
+        raise FileExistsError('Use a fresh diagnostics directory')
+    immutable = root.parent if (root.parent/'_archive-manifest.json').exists() else root
+    if args.output.resolve().is_relative_to(immutable.resolve()):
+        raise ValueError('Diagnostics must be outside the original archive')
     config = json.loads((root / 'config.json').read_text())
-    source = (root / 'branches/candidate-3/policy.py').read_text()
+    source = (root / 'branches' / args.candidate / 'policy.py').read_text()
     rows = [json.loads(line) for line in
-            (root / 'branches/candidate-3/validation/answers.jsonl').open()]
+            (root / 'branches' / args.candidate / 'validation/answers.jsonl').open()]
     by_patient = defaultdict(list)
     for row in rows:
         by_patient[row['persona_id']].append(row)
@@ -99,7 +117,7 @@ def main():
         meta = span.get('metadata', {})
         qid = meta.get('query_id')
         if (span.get('name') == 'memory.search' and span.get('status') == 'ok'
-                and meta.get('policy') == 'candidate-3' and meta.get('fold') == 'validation'
+                and meta.get('policy') == args.candidate and meta.get('fold') == 'validation'
                 and qid in chosen_ids):
             previous = search_inputs.get(qid)
             if previous is None or span['start_time_ns'] < previous['start_time_ns']:
@@ -120,6 +138,8 @@ def main():
             'text': '\n'.join(str(r.role)+': '+str(r.content) for r in turns.itertuples())})
     variants = ('candidate_original', 'candidate_rerank_disabled',
                 'candidate_character_bigrams', 'plain_bm25_same_queries')
+    if args.no_rerank_control:
+        variants = tuple(v for v in variants if v != 'candidate_rerank_disabled')
     metrics = {variant: defaultdict(list) for variant in variants}
     detail = []
     started = time.monotonic()
@@ -174,17 +194,33 @@ def main():
                     m['gold_session_hit'].append(bool(got & gold))
                     m['gold_session_recall'].append(len(got & gold)/len(gold))
                 detail.append({'variant':variant, 'query_id':row['query_id'],
+                               'exact_reproduction':actual_ids == logged_ids,
                                'returned_ids':actual_ids, 'reference_sessions':sorted(gold)})
             metrics[variant]['zero_bm25'].extend(zero_bm25)
-            print(json.dumps({'event':'group_complete', 'variant':variant,
+            print(json.dumps({'event':'group_complete', 'candidate':args.candidate, 'variant':variant,
                               'questions':len(patient_rows),
                               'elapsed_s':round(time.monotonic()-started, 1)}), flush=True)
+    matched = {d['query_id'] for d in detail if d['variant'] == 'candidate_original'
+               and d['exact_reproduction']}
+    strict_metrics = {v:defaultdict(list) for v in variants}
+    import re
+    for item in detail:
+        if item['query_id'] not in matched or not item['reference_sessions']:
+            continue
+        gold = set(item['reference_sessions'])
+        got = {int(re.search(r'-s([0-9]+)-c', cid).group(1)) for cid in item['returned_ids']}
+        strict_metrics[item['variant']]['gold_session_hit'].append(bool(got & gold))
+        strict_metrics[item['variant']]['gold_session_recall'].append(len(got & gold)/len(gold))
+    def compact(values):
+        return {v:{k:{'mean':mean(vals), 'count':len(vals), 'sum':sum(vals)}
+                   for k,vals in metrics.items()} for v,metrics in values.items()}
     report = {'scope':'retrieval_diagnosis_only_no_answer_rescoring',
+              'candidate':args.candidate, 'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
               'selection':'all queries at fifth of ten validation checkpoints per patient',
               'patients':len(selected), 'questions':len(chosen_ids),
-              'variants':{v:{k:{'mean':mean(vals), 'count':len(vals), 'sum':sum(vals)}
-                             for k,vals in values.items()} for v,values in metrics.items()}}
-    args.output.mkdir(parents=True, exist_ok=True)
+              'variants':compact(metrics),
+              'exact_reproduction_subset':{'questions':len(matched), 'variants':compact(strict_metrics)}}
+    args.output.mkdir(parents=True)
     (args.output / 'aggregate.json').write_text(json.dumps(report, indent=2)+'\n')
     # Keep all per-query identifiers on the server, outside the immutable run.
     (args.output / 'server-only-detail.json').write_text(json.dumps(detail)+'\n')

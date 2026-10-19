@@ -27,6 +27,8 @@ class ObservabilityIntegration(unittest.TestCase):
             self.assertTrue(all(q.get('links') for q in questions))
             self.assertFalse(summary['test_evaluated'])
             self.assertEqual(summary['comparison']['plain-bm25']['AVG'],1.)
+            self.assertEqual(summary['comparison']['plain-bm25']['E2E_AVG'],1.)
+            self.assertEqual(summary['comparison']['plain-bm25']['abnormal_rate'],0.)
             self.assertEqual(sum(s['name']=='rsi-evolution-round' for s in spans),1)
             self.assertTrue(any(s['name']=='memory.search' for s in spans))
             self.assertTrue(any(s['name']=='grade' for s in spans))

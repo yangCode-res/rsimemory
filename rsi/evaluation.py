@@ -244,7 +244,11 @@ def evaluate(query: dict[str, Any], answer: str, client: Any) -> dict[str, Any]:
 
 
 def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Compute complete per-type accuracy and the strict six-type macro AVG."""
+    """Keep strict AVG and add six-type E2E AVG with actor non-answers as zero.
+
+    Judge failures, malformed scores, unknown types and missing types remain
+    unscorable. Transport failures abort replay upstream, never become zero.
+    """
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     status_counts: Counter[str] = Counter()
     abnormal = 0
@@ -260,14 +264,21 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             abnormal += 1
         else:
             scored_total += 1
-        grouped[kind].append({"valid": valid, "score": score})
+        unanswered = kind in TYPES and status == "actor_failed" and score is None
+        grouped[kind].append({"valid": valid, "score": score,
+                              "unanswered_as_zero": unanswered})
 
     accuracy: dict[str, float | None] = {}
     counts_by_type: dict[str, dict[str, int]] = {}
+    e2e_accuracy: dict[str, float | None] = {}
     complete = True
+    e2e_complete = True
+    unanswered_total = 0
     for kind in TYPES:
         items = grouped.get(kind, [])
         valid_items = [item for item in items if item["valid"]]
+        unanswered_count = sum(item['unanswered_as_zero'] for item in items)
+        unanswered_total += unanswered_count
         counts_by_type[kind] = {"total": len(items), "scored": len(valid_items),
                                 "abnormal": len(items) - len(valid_items)}
         if not items or len(valid_items) != len(items):
@@ -275,12 +286,26 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             complete = False
         else:
             accuracy[kind] = sum(item["score"] for item in valid_items) / len(items)
+        if not items or len(valid_items) + unanswered_count != len(items):
+            e2e_accuracy[kind] = None
+            e2e_complete = False
+        else:
+            # Keep every question in the denominator, including non-answers.
+            e2e_accuracy[kind] = sum(item['score'] for item in valid_items) / len(items)
     unknown_types = {kind: len(items) for kind, items in grouped.items() if kind not in TYPES}
     if unknown_types:
         complete = False
+        e2e_complete = False
     avg = sum(value for value in accuracy.values() if value is not None) / len(TYPES) \
         if complete else None
+    e2e_avg = sum(value for value in e2e_accuracy.values() if value is not None) / len(TYPES) \
+        if e2e_complete else None
     return {"type_accuracy": accuracy, "AVG": avg,
+            "metric_version": "strict-plus-e2e-v1",
+            "e2e_type_accuracy": e2e_accuracy, "E2E_AVG": e2e_avg,
+            "abnormal_rate": abnormal / len(rows) if rows else None,
             "counts": {"total": len(rows), "scored": scored_total, "abnormal": abnormal,
+                       "unanswered_as_zero": unanswered_total,
+                       "e2e_unscorable": abnormal - unanswered_total,
                        "by_status": dict(status_counts), "by_type": counts_by_type,
                        "unknown_type": unknown_types}}

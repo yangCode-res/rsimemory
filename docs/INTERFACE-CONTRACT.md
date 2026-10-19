@@ -129,3 +129,5 @@ Landlock/seccomp 初始化失败、快照解码异常、候选异常、超时、
 本文件将接口协议升级至 v0.3；它不是代码实现或验收报告。历史 v0.2 运行、`VALIDATION-v0.2` 与 `RUNTIME-v0.2` 保持不变，不能从历史记录推断对象快照或 v0.3 隔离已验证。首次采用 v0.3 的新运行须使用新的 run ID 和目录，配置与报告明确记载 `contract_version: v0.3`、候选依赖、cloudpickle、snapshot size/error、worker 隔离参数及结果；不得覆盖或重命名历史运行。
 
 在线 ReAct 的固定 `search/read` 结构、只返回宿主登记的原文 ID、患者与检查点范围、gold/future 隔离、检查点同快照及问题间独立性继续有效。当前证据查询只读：每次 `search` 恢复独立副本并丢弃，只有 `ingest` 会生成新持久状态版本。Mixed 尚未接入、no-diagnosis 对照及其他既有实验限制沿用对应运行配置和历史记录，不由本协议更新推断其已完成。
+
+2026-10-19 增加报告 schema `strict-plus-e2e-v1`，不改变 policy v0.3 接口和冻结 ReAct。新增 `E2E_AVG`、`e2e_type_accuracy`、`abnormal_rate`、`counts.unanswered_as_zero` 与 `counts.e2e_unscorable`。仅 `actor_failed` 且分数为 null 作为未作答计 0，原逐题分数及严格 AVG 不改；judge/非法分数等不可判定项仍使 E2E 不可用，缺类同样不可比较。补充指标不替换现有自动选择规则。新运行将指标版本冻结在 config，历史补算单独留档并记录实现版本和来源哈希。

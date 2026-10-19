@@ -76,7 +76,8 @@ def _summary_context(summary: Any) -> dict[str, Any]:
             if isinstance(metrics, dict):
                 compact_comparison[str(name)[:100]] = {
                     key: metrics[key] for key in
-                    ("AVG", "policy_tokens", "policy_seconds", "policy_bytes", "valid")
+                    ("AVG", "E2E_AVG", "abnormal_rate", "unanswered_as_zero",
+                     "policy_tokens", "policy_seconds", "policy_bytes", "valid")
                     if key in metrics and isinstance(metrics[key], (int, float, bool, type(None)))
                 }
     cost = summary.get("cost")

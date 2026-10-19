@@ -41,7 +41,10 @@ def comparison_metric(report):
     def seconds(row):
         if 'sandbox_seconds' in row: return row['sandbox_seconds']
         return row.get('ingest_seconds',0)+row.get('search_seconds',0)
-    return {'AVG':report['AVG'],'policy_tokens':0,
+    return {'AVG':report['AVG'], 'E2E_AVG':report.get('E2E_AVG'),
+            'abnormal_rate':report.get('abnormal_rate'),
+            'unanswered_as_zero':report.get('counts',{}).get('unanswered_as_zero'),
+            'policy_tokens':0,
             'policy_seconds':sum(seconds(r) for r in cost)+report['cost'].get('search_seconds',0.),
             'policy_bytes':max([r.get('peak_storage_bytes',r.get('storage_bytes',0)) for r in cost] or [0])}
 
@@ -94,6 +97,7 @@ def main():
             'fixture':args.fixture,'model':args.model,'judge_model':args.judge_model or args.model,
             'speculation':'disabled','policy_auxiliary_model':'disabled',**vars(args)}
     config['judge_model']=args.judge_model or args.model
+    config['evaluation_metric_version']='strict-plus-e2e-v1'
     config['actor_max_tokens']=1024
     config['optimizer_generation_settings']={
         'reflexion':{'max_tokens':args.reflexion_max_tokens,'temperature':args.reflexion_temperature,
@@ -252,10 +256,12 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
     dump(out/'summary.json',summary)
     with trace_span('round.result') as observation:
         observation.update(output=summary)
-    lines=['# 工程运行报告', '', '此运行用于协议和工程验证，未经过论文级 judge 校准。', '',
-           '|版本|验证 AVG|Policy 秒数|Policy 峰值字节|', '|---|---:|---:|---:|']
+    lines=['# 工程运行报告', '', '此运行用于协议和工程验证，未经过论文级 judge 校准。',
+           'E2E AVG 将 actor 未作答计为 0，保留六类等权平均；judge 异常、缺类仍为 null。严格 AVG、UCT/Pareto 规则保持原口径。', '',
+           '|版本|严格验证 AVG|E2E 验证 AVG|异常率|Policy 秒数|Policy 峰值字节|',
+           '|---|---:|---:|---:|---:|---:|']
     for name,r in comparisons.items():
-        lines.append(f'|{name}|{r["AVG"]}|{r["policy_seconds"]:.3f}|{r["policy_bytes"]}|')
+        lines.append(f'|{name}|{r["AVG"]}|{r["E2E_AVG"]}|{r["abnormal_rate"]}|{r["policy_seconds"]:.3f}|{r["policy_bytes"]}|')
     lines.extend(['', '合成 fixture：'+str(args.fixture), '测试集评估：False',
                   '语义基线状态：'+semantic['status'], '保留的 Pareto 候选：'+', '.join(summary['pareto'])])
     for node in branches:

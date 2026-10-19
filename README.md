@@ -24,7 +24,7 @@ python -m rsi.cli --dataset /file_storage01/home/juanliu/25_ymj/code/MedMemoryBe
 
 执行器按患者和时间 ingest 原文 chunk；每题从同一检查点状态生成独立工具视图。ReAct 只使用 search/read/final。宿主绑定患者和时间，候选不能扩大 filters。预览与完整读取不包含题型或答案标注。
 
-EEM/MQ规则评分，其余四类采用自定义严格 JSON judge。异常保留 null，缺类或评分异常时 AVG 为 null。这不是论文官方 rubric 的完整复现。训练失败与成功对照进入 Reflexion；定向证据干预单独记录。三个生成代码候选通过 Linux 隔离运行并从头 replay，验证成绩不回传 UCT。policy-git 保存每个代码提交与父子关系，失败节点不参与 Pareto。
+EEM/MQ规则评分，其余四类采用自定义严格 JSON judge。异常保留 null，缺类或评分异常时严格 AVG 为 null。另报 `E2E_AVG`：未作答的 `actor_failed` 计 0，仍按六类等权平均，并保留 `abnormal_rate`；judge 异常和缺类仍不可评分，详见[指标说明](docs/METRICS-E2E.md)。这不是论文官方 rubric 的完整复现。训练失败与成功对照进入 Reflexion；定向证据干预单独记录。三个生成代码候选通过 Linux 隔离运行并从头 replay，验证成绩不回传 UCT。policy-git 保存每个代码提交与父子关系，失败节点不参与 Pareto；补充指标不替换既有自动选择规则。
 
 ## 产物
 

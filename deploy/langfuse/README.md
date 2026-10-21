@@ -69,3 +69,12 @@ ssh -N -o ExitOnForwardFailure=yes \
 - <http://localhost:3000/project/memory-policy-rsi/traces/ac9f73e55556abd6462be8f4e27bebea?observation=5b0a9aaa3b2b2b6a>
 
 树中包括 `diagnostic_bundle`、`reflection`、三个 `codegen` 与 `validation_and_cost_summary`。候选区分信息在 observation metadata 的 `policy`。历史时间轴是导入时间，不代表原始运行耗时；旧提案没有明确案例归因的部分标记未记录。详见 [轨迹说明](../../docs/LANGFUSE.md)。
+
+## 实验自动登录入口
+
+`hpc.py up` 同时启动 `auto_login.py`，只监听服务器 `127.0.0.1:3001`。
+在电脑增加 SSH 转发 `-L 127.0.0.1:3001:127.0.0.1:3001`，打开
+<http://localhost:3001/>，即可使用默认实验账号登录并跳转至 3000 的项目页。
+仍需原有 3000/9092 转发。凭据只在服务器读取，浏览器接收 HttpOnly 会话 cookie。
+这是共享实验账号入口：能访问该端口的人即获得默认账号权限，只通过既有 SSH 隧道使用。
+无需修改 Langfuse 镜像、数据库或原有密码认证；停止辅助进程即可撤销自动登录入口。

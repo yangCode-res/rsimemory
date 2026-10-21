@@ -94,6 +94,20 @@ def ensure_bridges():
             raise RuntimeError(name + ' startup failed; inspect its private log')
 
 
+def ensure_auto_login():
+    pid_file = RUNTIME / 'state/auto-login.pid'
+    script = HERE / 'auto_login.py'
+    if process_alive(pid_file, str(script)):
+        return
+    with open(DATA / 'logs/auto-login.log', 'ab') as log:
+        process = subprocess.Popen([sys.executable, str(script)],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    private_file(pid_file, str(process.pid))
+    time.sleep(.3)
+    if process.poll() is not None:
+        raise RuntimeError('Auto-login helper startup failed')
+
+
 def private_file(path, text):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
@@ -287,6 +301,7 @@ def main():
         for name in names:
             launch(name)
         ensure_bridges()
+        ensure_auto_login()
     elif args.action == 'stop':
         for name in reversed(names):
             engine('stop', '--time=30', PREFIX + name, check=False)

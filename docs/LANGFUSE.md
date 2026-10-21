@@ -86,3 +86,20 @@ memory.ingest span 仅对修复后的新运行生效，不能倒造历史摄入 
 当前 events_only 部署必须用 /api/public/experiments 与 /api/public/experiment-items 读回核验。旧 dataset-run-items POST 虽接受但不创建新 Experiments 页面记录；早期尝试回执留作审计，不将其算成成功实验关联。v4 实验属性增强先经合成验收，确认原有 span ID、token 与 Score 不变后才用于真实运行；最后再次执行完整入库对账。
 
 151576 v4 实验验收：10 个 native experiment，各训练 772、验证 380 个 item，全部 trace/observation 关联一致。实验属性增强完成后又通过原记录全量对账（47,198 observation，17,320 Score，usage 一致，无重复）。界面 Experiments 可排除 Dataset rsi-integration-synthetic-v2；首页选择 research 环境。外部浏览器不共享应用内浏览器筛选，请在对应浏览器设置。
+
+## 进化优先观测配置
+
+`deploy/langfuse/observability.json` 控制派生总览：enabled 启用、version 绑定不可变视图版本、environment 隔离展示、include_type_metrics 保留六类成绩及百分点变化、include_training_case_links 关联父策略训练案例。调整已发布视图的字段后提升 version，不能覆盖旧视图。原始模型请求和实验归档继续完整保留，不通过这些配置抽样或改变实验。
+
+`scripts.langfuse_run` 导入完成后自动发布 evolution.overview；历史已有导入可以调用 scripts.evolution_overview.publish 派生，不重新导入原记录。总览位于导入目录/version，包含总览根节点、每个候选一个节点、独立 score/trace 回执与 prepare.json；用 scripts.verify_langfuse_run 对这个目录核验。验证按 environment 隔离，不把派生视图当成原始运行的额外执行。
+
+总览展示模型报告的提案、原始代码调用入口、父版本、候选 commit、train/validation 严格 AVG 与 E2E AVG、六类变化、验证成本、相对 BGE 的变化、选择状态和训练案例链接。空严格指标继续为空，不强行补零。支持案例只链接父策略 train，链接存在不证明模型归因成立；hypothesis_verdict 明确为未自动裁定。峰值状态字节与候选隔离开销不可当成纯检索算法成本。
+
+151576：research-overview 中新增 4 条派生观测、18 个聚合指标、6 个已解析训练案例引用，全部入库核验一致；原始 research 记录再次核验不变。没有新增模型调用、读取 test 或重复计算 token。该视图时间表示原执行区间，不是视图生成耗时。进化主链仍须查原始 rsi-evolution-round trace；该总览用于缩短导航，不取代证据与干预。
+
+只生成/恢复总览的独立入口：
+```sh
+.venv/bin/python -m scripts.evolution_overview --run runs/full-v03-local-JOBID/result --output runs/langfuse-import-JOBID-v2 --env-file observability/langfuse/.env
+.venv/bin/python -m scripts.verify_langfuse_run --output runs/langfuse-import-JOBID-v2/evolution-overview-v1
+```
+命令可重复执行，复用同一回执和同一观测 ID，不增加模型调用；更改视图内容后升级配置 version。

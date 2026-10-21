@@ -215,6 +215,9 @@ def main():
         raise RuntimeError('Trace delivery incomplete; inspect receipt')
     score_count = deliver_scores(args.output, client)
     print(json.dumps({'accepted_spans': len(receipt['accepted_ids']), 'accepted_scores': score_count}), flush=True)
+    from scripts.evolution_overview import publish
+    overview = publish(args.run, args.output, client, env)
+    print(json.dumps({'evolution_overview': overview}), flush=True)
 
 
 if __name__ == '__main__':

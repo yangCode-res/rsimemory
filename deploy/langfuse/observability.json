@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "environment": "research-overview",
+  "include_type_metrics": true,
+  "include_training_case_links": true,
+  "version": "evolution-overview-v1"
+}

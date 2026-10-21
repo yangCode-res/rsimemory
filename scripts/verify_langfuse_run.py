@@ -31,6 +31,11 @@ def verify(output):
     if any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in identity):
         raise ValueError('Unsupported run identity')
     scope = "project_id='memory-policy-rsi' AND session_id='" + identity + "'"
+    environment = manifest.get('environment') or next(otlp.iter_records(source)).get('environment')
+    if environment:
+        if any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in environment):
+            raise ValueError('Unsupported environment identifier')
+        scope += " AND environment='" + environment + "'"
     actual = query('SELECT span_id,trace_id,name,usage_details,prompt_name,prompt_version,environment '
                    'FROM default.events_core FINAL WHERE ' + scope)
     actual_by_id = {row['span_id']: row for row in actual}

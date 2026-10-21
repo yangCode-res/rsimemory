@@ -271,3 +271,5 @@ ssh -N -L 127.0.0.1:3000:127.0.0.1:3000 \
 自动登录入口为电脑 http://localhost:3001/，依赖 3000/3001/9092 SSH 转发。hpc.py up 启动本机回环自动登录辅助服务，保持服务器端凭据。ClickHouse 限额现为 12 GiB，Prisma 每进程连接池 8，避免管理节点 CPU 数导致默认池过大。美元价格仍未配置：$0 不表示本地计算无成本。严格 AVG、E2E AVG、每题均值保持不同含义；Prompt 仅注册实际 system messages，完整动态输入仍在 generation。
 
 原生 v4 Experiments 亦已完成：1,152 个 train/validation Dataset item；10 个策略/fold 运行各自的 772/380 条 item→trace→observation 关联均经 v4 API 分页读回核对。experiment-verification.json 为 true；之后重新核对原观测与评分仍全部一致，无重复。旧 legacy 实验关联 API 尝试回执保留，不作为成功依据。
+
+进化优先总览已启用：配置 deploy/langfuse/observability.json；151576 总览 trace af3877e628d0165b9fa003fcfde87bf9，环境 research-overview。4 个派生节点、18 个聚合指标已核验，6 个父策略训练案例引用均解析成功。scripts.langfuse_run 后续导入会自动生成总览，原始采集仍完整保留。展示配置不改变进化预算、actor、选择规则或测试集边界；hypothesis_verdict 不自动裁定因果。

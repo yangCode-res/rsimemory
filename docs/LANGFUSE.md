@@ -103,3 +103,18 @@ memory.ingest span 仅对修复后的新运行生效，不能倒造历史摄入 
 .venv/bin/python -m scripts.verify_langfuse_run --output runs/langfuse-import-JOBID-v2/evolution-overview-v1
 ```
 命令可重复执行，复用同一回执和同一观测 ID，不增加模型调用；更改视图内容后升级配置 version。
+
+## 按患者查看
+
+配置 observability.json 的 patient_grouping.enabled=true，version=patient-view-v1。后续 prepare 根据已执行的 train/validation answers.jsonl 补齐匿名 patient 属性，并将 question trace 及其所有子 observation 的 session 设为 run_id/patient-匿名编号。同患者跨策略共用 session，不跨 run 合并；原始 run_id、policy、fold、checkpoint、query_id 和题型仍保留。原始患者 key 不导出为标签，稳定匿名标签由数据 revision 和 persona_id 派生；不同患者映射同一 query ID 或患者跨 fold 时中止。新运行在原始 question span 中直接记录同样的 patient 标签；不改变送给回答模型的内容。
+
+已导入运行用 scripts.patient_view 增强既有 span，不生成新回答、不重复写 Score，且保留原有 v4 experiment 元数据：
+```sh
+.venv/bin/python -m scripts.patient_view --run runs/full-v03-local-JOBID/result --output runs/langfuse-import-JOBID-v2 --env-file observability/langfuse/.env
+.venv/bin/python -m scripts.verify_langfuse_run --output runs/langfuse-import-JOBID-v2/patient-view-v1
+```
+151576 共 12 个已评测患者、5,760 条问题轨迹；Session 内包含同患者的全部策略，策略/题型/检查点仍在原 observation metadata 中。全局进化/反思/干预仍留在运行层，不强行归到某一患者，测试患者没有读取。患者会话的 token 只覆盖对应问题调用，不包含全局优化器或证据干预。
+
+界面入口：左侧 Sessions → 时间范围 Past 30 days → Session ID contains full-v03-local-JOBID/patient-。点患者 session 进入该患者的调用轨迹。Tracer/Experiments 仍可用于跨患者的策略比较。旧的运行 session 现在主要包含全局步骤；患者详情已归入独立会话。
+
+verify_langfuse_run 现在按不可变 trace ID 核验原运行，而不是依赖可变的 Session 展示属性；患者派生输入另校验 session_id。原始文件和既有导入回执保留，更新会话展示后重新核验 token/评分/Prompt/实验关联。该改动仅改变分组，未启用实时导入或浏览器自动刷新。

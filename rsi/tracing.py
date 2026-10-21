@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import json
+import hashlib
 import os
 from pathlib import Path
 import time
@@ -232,3 +233,9 @@ def _inherited_metadata(state: _State) -> dict[str, object]:
         result.update(observation.metadata)
     return result
 
+
+
+def patient_label(persona_id, data_revision=None):
+    """Stable dataset-scoped alias; never expose the original patient key."""
+    identity=json.dumps([data_revision,str(persona_id)],sort_keys=True,ensure_ascii=False)
+    return 'patient-' + hashlib.sha256(identity.encode()).hexdigest()[:10]

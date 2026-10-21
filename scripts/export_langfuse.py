@@ -127,7 +127,7 @@ def record_to_span(record, trace_name=None):
         if key == "provenance" and record.get("provenance") is not None:
             continue
         if key == "run_id":
-            attrs.append(_attribute("langfuse.session.id", str(value)))
+            attrs.append(_attribute("langfuse.session.id", str(record.get("session_id") or value)))
         attrs.append(_attribute(f"langfuse.observation.metadata.{key}", value))
         attrs.append(_attribute(f"langfuse.trace.metadata.{key}", value))
     if record.get("provenance") is not None:

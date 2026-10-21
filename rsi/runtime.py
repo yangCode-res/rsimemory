@@ -10,7 +10,7 @@ import time
 from .actor import Actor, ACTOR_SYSTEM_PROMPT
 from .data import chunk_session
 from .evaluation import evaluate, aggregate
-from .tracing import trace_span
+from .tracing import trace_span, patient_label
 
 
 def dump(path, value):
@@ -182,7 +182,7 @@ def _replay(sessions, queries, ids, policy_factory, actor_client, judge_client, 
                                           config['context_chars'], on_operation=persist_tool_operation)
                         with trace_span('question', kind='agent', new_trace=True,
                                         input={'question':q['question']},
-                                        metadata={'query_id':q['query_id'], 'checkpoint':q['session_id'],
+                                        metadata={'query_id':q['query_id'], 'patient':patient_label(pid,config.get('data_revision')), 'checkpoint':q['session_id'],
                                                   'query_type':q['query_type']}) as question_span:
                             response = actor.answer(q['question'], tools)
                             if response['status'] not in ('completed', 'forced_final'):

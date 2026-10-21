@@ -109,6 +109,11 @@ def prepare(run, output, client, fixture=False):
                 otlp._write_receipt(registry_path, registry)
             if spec:
                 prompts[record['span_id']] = (spec['name'], registry[spec['name']])
+    profile = json.loads((Path(__file__).resolve().parents[1] / 'deploy/langfuse/observability.json').read_text())
+    patient_lookup = None
+    if profile.get('patient_grouping', {}).get('enabled', False):
+        from scripts.patient_view import index_patients
+        patient_lookup, _ = index_patients(run)
     scores = []
     trace_path = output / 'traces.jsonl'
     counts = {'records': 0, 'questions': 0, 'generations': 0, 'errors': 0}
@@ -129,6 +134,9 @@ def prepare(run, output, client, fixture=False):
             record['tags'] = ['rsi', identity, record['environment']]
             for key in ['policy', 'fold']:
                 if metadata.get(key): record['tags'].append(str(metadata[key]))
+            if patient_lookup is not None:
+                from scripts.patient_view import group_record
+                group_record(record, patient_lookup, identity)
             if record['span_id'] in prompts:
                 record['prompt_name'], record['prompt_version'] = prompts[record['span_id']]
             if record['name'] == 'question':

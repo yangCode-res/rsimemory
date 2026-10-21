@@ -30,18 +30,22 @@ def verify(output):
     identity = manifest['run_id']
     if any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in identity):
         raise ValueError('Unsupported run identity')
-    scope = "project_id='memory-policy-rsi' AND session_id='" + identity + "'"
+    trace_ids = sorted({record['trace_id'] for record in otlp.iter_records(source)})
+    if any(len(value) != 32 or any(c not in '0123456789abcdef' for c in value) for value in trace_ids):
+        raise ValueError('Invalid trace identity in verification input')
+    # Verify immutable trace identities, independent of session presentation.
+    scope = "project_id='memory-policy-rsi' AND trace_id IN (" + ','.join(repr(value) for value in trace_ids) + ')'
     environment = manifest.get('environment') or next(otlp.iter_records(source)).get('environment')
     if environment:
         if any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in environment):
             raise ValueError('Unsupported environment identifier')
         scope += " AND environment='" + environment + "'"
-    actual = query('SELECT span_id,trace_id,name,usage_details,prompt_name,prompt_version,environment '
+    actual = query('SELECT span_id,trace_id,name,session_id,usage_details,prompt_name,prompt_version,environment '
                    'FROM default.events_core FINAL WHERE ' + scope)
     actual_by_id = {row['span_id']: row for row in actual}
     expected = {}
     usage = {}
-    mismatches = {'trace_id': 0, 'usage': 0, 'prompt': 0, 'environment': 0}
+    mismatches = {'trace_id': 0, 'usage': 0, 'prompt': 0, 'environment': 0, 'session': 0}
     for record in otlp.iter_records(source):
         identifier = record['span_id']
         expected[identifier] = record['trace_id']
@@ -49,6 +53,8 @@ def verify(output):
         if row is None:
             continue
         mismatches['trace_id'] += int(row['trace_id'] != record['trace_id'])
+        if record.get('session_id'):
+            mismatches['session'] += int(row['session_id'] != record['session_id'])
         mismatches['environment'] += int(row['environment'] != record['environment'])
         if record.get('kind') == 'generation':
             target = otlp._normalized_usage(record.get('usage'))

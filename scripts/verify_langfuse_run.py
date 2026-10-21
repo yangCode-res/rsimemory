@@ -40,12 +40,12 @@ def verify(output):
         if any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in environment):
             raise ValueError('Unsupported environment identifier')
         scope += " AND environment='" + environment + "'"
-    actual = query('SELECT span_id,trace_id,name,session_id,usage_details,prompt_name,prompt_version,environment '
+    actual = query('SELECT span_id,trace_id,name,session_id,user_id,usage_details,prompt_name,prompt_version,environment '
                    'FROM default.events_core FINAL WHERE ' + scope)
     actual_by_id = {row['span_id']: row for row in actual}
     expected = {}
     usage = {}
-    mismatches = {'trace_id': 0, 'usage': 0, 'prompt': 0, 'environment': 0, 'session': 0}
+    mismatches = {'trace_id': 0, 'usage': 0, 'prompt': 0, 'environment': 0, 'session': 0, 'user_id': 0}
     for record in otlp.iter_records(source):
         identifier = record['span_id']
         expected[identifier] = record['trace_id']
@@ -53,6 +53,8 @@ def verify(output):
         if row is None:
             continue
         mismatches['trace_id'] += int(row['trace_id'] != record['trace_id'])
+        if record.get('metadata',{}).get('patient'):
+            mismatches['user_id'] += int(row['user_id'] != record['metadata']['patient'])
         if record.get('session_id'):
             mismatches['session'] += int(row['session_id'] != record['session_id'])
         mismatches['environment'] += int(row['environment'] != record['environment'])

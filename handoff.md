@@ -275,3 +275,5 @@ ssh -N -L 127.0.0.1:3000:127.0.0.1:3000 \
 进化优先总览已启用：配置 deploy/langfuse/observability.json；151576 总览 trace af3877e628d0165b9fa003fcfde87bf9，环境 research-overview。4 个派生节点、18 个聚合指标已核验，6 个父策略训练案例引用均解析成功。scripts.langfuse_run 后续导入会自动生成总览，原始采集仍完整保留。展示配置不改变进化预算、actor、选择规则或测试集边界；hypothesis_verdict 不自动裁定因果。
 
 患者分组已启用：151576 的 5,760 条问题归入 12 个 run_id/patient-匿名编号 Session，同患者跨策略合并；全局进化与干预保留运行层。入口为 Sessions，Session ID contains full-v03-local-151576/patient-。新运行采集 patient 标签且后续导入自动按患者分组，历史已导入记录由 scripts.patient_view 增强并保留 v4 实验关联；不新增回答或 Score。当前实时导入/自动刷新仍未实现。
+
+患者匿名编号已映射为 Langfuse 原生 User ID；患者 Session 分组保持不变，后续新导入自动继承。已有运行通过 patient-view 的独立 User ID 增强回执补齐。

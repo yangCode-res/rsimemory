@@ -105,7 +105,7 @@ def publish(run, imported, client, env):
     otlp._write_receipt(target / 'prepare.json', {
         'run_id': identity, 'source_sha256': manifest['source_sha256'],
         'prepared_sha256': otlp._input_sha256(path), 'usage': usage, 'environment': environment})
-    receipt = otlp.export(path, target / 'trace-receipt.json', env=env, max_batch_bytes=2 * 1024 * 1024)
+    receipt = otlp.export(path, target / 'user-id-receipt.json', env=env, max_batch_bytes=2 * 1024 * 1024)
     if receipt.get('delivery_status') != 'accepted':
         raise ValueError('Patient grouping delivery incomplete')
     result = {'run_id': identity, 'patients': patients, 'questions': questions,

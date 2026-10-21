@@ -118,3 +118,5 @@ memory.ingest span 仅对修复后的新运行生效，不能倒造历史摄入 
 界面入口：左侧 Sessions → 时间范围 Past 30 days → Session ID contains full-v03-local-JOBID/patient-。点患者 session 进入该患者的调用轨迹。Tracer/Experiments 仍可用于跨患者的策略比较。旧的运行 session 现在主要包含全局步骤；患者详情已归入独立会话。
 
 verify_langfuse_run 现在按不可变 trace ID 核验原运行，而不是依赖可变的 Session 展示属性；患者派生输入另校验 session_id。原始文件和既有导入回执保留，更新会话展示后重新核验 token/评分/Prompt/实验关联。该改动仅改变分组，未启用实时导入或浏览器自动刷新。
+
+患者匿名标签同时映射为原生 langfuse.user.id，可在 Users 查看跨运行的同患者记录；Session 仍按 run/patient 隔离。已有 patient-view 使用独立 user-id-receipt.json 增强，不清空之前的 Session 回执。verify_langfuse_run 对含 patient 的每个 observation 核验原生 user_id。使用已建立的稳定匿名编号，不将原始 persona_id 作为显示字段。

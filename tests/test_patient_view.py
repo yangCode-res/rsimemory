@@ -36,3 +36,9 @@ class PatientViewTests(unittest.TestCase):
         for key in ['input','output','trace_id']:
             self.assertEqual(grouped[key],original[key])
         self.assertEqual(grouped['metadata']['checkpoint'],7)
+
+    def test_patient_is_native_user_id(self):
+        row={'trace_id':'a'*32,'span_id':'b'*16,'name':'question',
+             'start_time_ns':1,'end_time_ns':2,'metadata':{'run_id':'r','patient':'patient-x'}}
+        attrs=[a for a in record_to_span(row)['attributes'] if a['key']=='langfuse.user.id']
+        self.assertEqual(attrs,[{'key':'langfuse.user.id','value':{'stringValue':'patient-x'}}])

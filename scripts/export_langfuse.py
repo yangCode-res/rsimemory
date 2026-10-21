@@ -150,6 +150,20 @@ def record_to_span(record, trace_name=None):
         "endTimeUnixNano": str(int(record["end_time_ns"])),
         "attributes": attrs,
     }
+    for field, attr in (("environment", "langfuse.environment"),
+                        ("tags", "langfuse.trace.tags"),
+                        ("prompt_name", "langfuse.observation.prompt.name"),
+                        ("prompt_version", "langfuse.observation.prompt.version")):
+        if record.get(field) is not None:
+            attrs.append(_attribute(attr, record[field]))
+    if record.get("kind") == "generation":
+        parameters = {key: metadata[key] for key in ("temperature", "max_tokens", "timeout_s")
+                      if key in metadata}
+        if parameters:
+            attrs.append(_attribute("langfuse.observation.model.parameters", _json_value(parameters)))
+    for key, value in record.get('experiment_attributes', {}).items():
+        if key.startswith('langfuse.experiment.'):
+            attrs.append(_attribute(key, value))
     parent = record.get("parent_span_id")
     if parent:
         if len(parent) != 16 or any(c not in "0123456789abcdef" for c in parent):
@@ -200,18 +214,21 @@ def _trace_names(records):
 def _batches(records, max_bytes, trace_names=None):
     trace_names = trace_names or {}
     batch = []
+    overhead = len(json.dumps(_payload([]), separators=(",", ":")).encode())
+    size = overhead
     for record in records:
         span = record_to_span(record, trace_names.get(record.get("trace_id")))
-        candidate = batch + [span]
-        if len(json.dumps(_payload(candidate), separators=(",", ":")).encode()) > max_bytes:
-            if not batch:
-                raise ExportError("A single OTLP span exceeds the configured batch size")
+        length = len(json.dumps(span, separators=(",", ":")).encode())
+        if overhead + length > max_bytes:
+            raise ExportError("A single OTLP span exceeds the configured batch size")
+        addition = length + (1 if batch else 0)
+        if batch and size + addition > max_bytes:
             yield batch
-            batch = [span]
-            if len(json.dumps(_payload(batch), separators=(",", ":")).encode()) > max_bytes:
-                raise ExportError("A single OTLP span exceeds the configured batch size")
-        else:
-            batch = candidate
+            batch = []
+            size = overhead
+            addition = length
+        batch.append(span)
+        size += addition
     if batch:
         yield batch
 

@@ -261,3 +261,13 @@ ssh -N -L 127.0.0.1:3000:127.0.0.1:3000 \
 8. 测试集继续封存，需在方案和候选冻结后再安排。
 
 新接手先读本文和接口 → 确认 SSH/持久目录 → 查看 Git 状态及当前作业 → 核对对应 run 配置、完成数、异常与归档 → 再按用户当前请求行动。不要自动重跑历史实验，不覆盖已有记录，不把尚未实现的计划写成完成。
+
+## 14. 2026-10-21 Langfuse 接入修复
+
+151576 已通过新导入工具写入自部署 Langfuse。`runs/langfuse-import-151576-v2/verification.json` 标记 verified：47,198 条 observation、17,320 条 Score 的 ID/值/关联、22,397 次 generation 的 usage、四种 system prompt 关联、environment 均一致，无缺失/重复。统一 session 为 full-v03-local-151576，正式数据 environment=research；fixture 单独隔离。第一次后台因 PostgreSQL 连接耗尽丢 7 条，确认 core/full 两表均无记录后已单独补交；原始与恢复回执都保留。
+
+新增脚本 scripts/langfuse_run.py（派生并导入）、scripts/verify_langfuse_run.py（实际入库逐项对账）、scripts/link_langfuse_experiments.py（将已存在的问题轨迹关联原生 Dataset/Experiment，不重跑模型、不读 test）；详细流程见 docs/LANGFUSE.md。后续 CLI 唯一 run ID 与 memory.ingest span 已修复。新运行仍需在 Langfuse 所在管理节点完成独立导入与验证，不能仅凭作业结束声称 UI 已入库。
+
+自动登录入口为电脑 http://localhost:3001/，依赖 3000/3001/9092 SSH 转发。hpc.py up 启动本机回环自动登录辅助服务，保持服务器端凭据。ClickHouse 限额现为 12 GiB，Prisma 每进程连接池 8，避免管理节点 CPU 数导致默认池过大。美元价格仍未配置：$0 不表示本地计算无成本。严格 AVG、E2E AVG、每题均值保持不同含义；Prompt 仅注册实际 system messages，完整动态输入仍在 generation。
+
+原生 v4 Experiments 亦已完成：1,152 个 train/validation Dataset item；10 个策略/fold 运行各自的 772/380 条 item→trace→observation 关联均经 v4 API 分页读回核对。experiment-verification.json 为 true；之后重新核对原观测与评分仍全部一致，无重复。旧 legacy 实验关联 API 尝试回执保留，不作为成功依据。

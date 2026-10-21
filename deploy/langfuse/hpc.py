@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -41,6 +42,24 @@ def engine(*args, check=True):
         'XDG_RUNTIME_DIR=' + str(RUNTIME / 'run'),
         'CONTAINERS_STORAGE_CONF=' + str(DATA / 'config/containers/storage.conf'),
         'PATH=' + str(DATA / 'runtime/usr/local/bin') + ':/usr/bin:/bin', str(PODMAN), *args]
+    # Shared storage refuses renaming readonly incomplete layer directories.
+    # Repair only this account's incomplete VFS entries; Podman performs cleanup.
+    layer_file = DATA / 'graphroot/vfs-layers/layers.json'
+    try:
+        layers = json.loads(layer_file.read_text()) if layer_file.exists() else []
+    except (OSError, json.JSONDecodeError):
+        layers = []
+    if layers:
+        for layer in layers:
+            if not layer.get('flags', {}).get('incomplete'):
+                continue
+            identifier = layer.get('id', '')
+            if not re.fullmatch('[0-9a-f]{64}', identifier):
+                continue
+            directory = DATA / 'graphroot/vfs/dir' / identifier
+            if (directory.exists() and not directory.is_symlink() and
+                    directory.stat().st_uid == os.getuid()):
+                directory.chmod(stat.S_IMODE(directory.stat().st_mode) | stat.S_IRWXU)
     return subprocess.run(command, check=check, capture_output=True, text=True)
 
 
@@ -128,7 +147,7 @@ def app_environment(env):
               if key.startswith('LANGFUSE_INIT_') or key in
               ('SALT', 'ENCRYPTION_KEY', 'NEXTAUTH_SECRET', 'NEXTAUTH_URL', 'REDIS_AUTH')}
     values.update({
-        'DATABASE_URL': 'postgresql://postgres:' + env['POSTGRES_PASSWORD'] + '@127.0.0.1:5432/postgres',
+        'DATABASE_URL': 'postgresql://postgres:' + env['POSTGRES_PASSWORD'] + '@127.0.0.1:5432/postgres?connection_limit=8&pool_timeout=30',
         'TELEMETRY_ENABLED': 'false', 'NEXT_TELEMETRY_DISABLED': '1',
         'CLICKHOUSE_MIGRATION_URL': 'clickhouse://127.0.0.1:9000',
         'CLICKHOUSE_URL': 'http://127.0.0.1:8123', 'CLICKHOUSE_USER': 'clickhouse',
@@ -158,7 +177,9 @@ def launch(name):
         print(name + ': already running', flush=True)
         return
     # Only remove this launcher's stopped container; never touch another stack.
-    engine('rm', PREFIX + name, check=False)
+    removed = engine('rm', PREFIX + name, check=False)
+    if removed.returncode and ('permission denied' in removed.stderr or 'external' in removed.stderr):
+        engine('rm', '--force', '--storage', PREFIX + name, check=False)
     archive = DATA / 'images' / (name + '.rootfs.tar')
     rootfs = (RUNTIME if archive.exists() else DATA) / 'rootfs' / name
     copy_marker = (RUNTIME if archive.exists() else DATA) / 'state' / ('rootfs-' + name + '.ready')
@@ -219,6 +240,7 @@ def launch(name):
         private_file(copy_marker, IMAGES[name])
     if not archive.exists():
         private_file(metadata_file, json.dumps({'image_id':IMAGES[name], 'config':config}))
+    rootfs.chmod(stat.S_IMODE(rootfs.stat().st_mode) | stat.S_IRWXU)
     uid = {'postgres': 999, 'redis': 999, 'minio': 65532, 'clickhouse': 101,
            'web': 1001, 'worker': 1001}[name]
     env = environment()

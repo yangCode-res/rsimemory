@@ -161,7 +161,10 @@ def _replay(sessions, queries, ids, policy_factory, actor_client, judge_client, 
                     if session['persona_id'] != pid: continue
                     if not pending or session['session_id'] > max(pending): break
                     for chunk in chunk_session(session, config['chunk_chars'], config['chunk_overlap']):
-                        start = time.perf_counter(); policy.ingest(chunk)
+                        start = time.perf_counter()
+                        with trace_span('memory.ingest', metadata={'memory_id':chunk['id'],
+                                                                'checkpoint':session['session_id']}):
+                            policy.ingest(chunk)
                         operation = {'event': 'ingest', 'persona_id': pid, 'session_id': session['session_id'],
                                      'memory_id': chunk['id'], 'seconds': time.perf_counter()-start}
                         operations.append(operation)

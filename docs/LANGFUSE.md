@@ -53,3 +53,36 @@ CLI 自动在运行目录写入 `traces.jsonl`。记录器使用标准库，不�
 部署与本机 SSH 转发参见 [部署目录](../deploy/langfuse/README.md)。Langfuse 服务和数据库的运行状态、导入回执与浏览器可访问性应分别验证；代码测试通过不能替代部署验收。
 
 持久存储统一使用 `/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/observability/langfuse/`。软件原档、数据库、轨迹对象、配置与密钥都在该目录；`/tmp/rsi-langfuse-1035/` 仅承载可重建的软件缓存及 PID/socket。数据库迁移须停写、逐文件校验，并通过 v4 读取接口核对历史 observation ID。
+
+## 2026-10-21：完整运行接入 v2
+
+修复包括唯一 run/session ID（不再统一为 result）、research/fixture 环境隔离、policy/fold 标签、模型参数、冻结 system prompt 版本与 generation 关联、原生数值 Score。Prompt 名称绑定内容 SHA；注册的只是实际 system messages，不声称完整动态请求已成为 Prompt 模板；完整请求在 generation input。
+
+在管理节点完成运行后执行（不是在无 Langfuse 服务的 GPU 节点执行）：
+
+```sh
+.venv/bin/python -m scripts.langfuse_run \
+  --run runs/full-v03-local-JOBID/result \
+  --output runs/langfuse-import-JOBID-v2 \
+  --env-file observability/langfuse/.env
+.venv/bin/python -m scripts.verify_langfuse_run \
+  --output runs/langfuse-import-JOBID-v2
+```
+
+派生轨迹和回执写到新的导入目录，原始 run 不变。验证对照每个 span ID、trace ID、用量、提示词版本、环境和每个 Score ID/值/关联；验证不通过返回非零。HTTP 接受不等于完成。出现缺失须先查队列与 worker 错误，确认数据库无对应记录后才可补交，不清空原回执、不重传整轮。
+
+页面选择 research 环境，并按 session full-v03-local-JOBID、policy/fold 标签筛选。Scores 中 correctness 为逐题原评分，e2e_correctness 仅对 actor_failed 未作答补零；judge 异常不补零。AVG/E2E_AVG 是 replay observation 上的六类等权聚合，不能用 correctness 的全题均值代替。policy_seconds 包含候选隔离开销，policy_peak_bytes 为状态峰值。未配置 GPU 价格时美元面板不代表实际计算免费；看用量和延迟。
+
+memory.ingest span 仅对修复后的新运行生效，不能倒造历史摄入 span。历史实际耗时、缺失请求不得伪造。多层 worker/快照成本细分仍以实际记录能力为界。
+
+部署同时限制 Prisma 每个进程连接池为 8，避免默认连接数随管理节点 CPU 数膨胀；此问题可导致已接受的 span 在关联 Prompt 时被后台丢弃。Podman 共享存储的 readonly incomplete VFS layer 恢复只修改当前账号所属条目的目录权限，由 Podman 自行清理；不删除持久数据库。
+
+151576 实际导入验收：47,198 个唯一 observation、17,320 个原生 Score 全部对账一致，缺失/额外/重复与字段差异均为零；22,397 个 generation 的用量及四类 system prompt 关联一致。第一次后台处理因连接耗尽缺失 7 条，已在 core/full 两表确认不存在后单独补交，审计和恢复回执均保留在导入目录。最终以 verification.json verified=true 为准。
+
+原生实验关联：在 verification.json 为 true 后，执行
+`.venv/bin/python -m scripts.link_langfuse_experiments --run runs/full-v03-local-JOBID/result --output runs/langfuse-import-JOBID-v2 --env-file observability/langfuse/.env`。
+创建本地 train/validation Dataset items，再用官方 v4 OTel experiment 属性增强已有 question trace/observation（保留原 ID），不重新生成回答，不读取 test，不把历史答案伪作 expected output。Dataset item 注册使用 4 并发且保存逐项回执；实验关联使用单独的 OTLP 增强回执；每个策略/fold 独立运行。导入后逐项核对原生 experiment 与既有 trace/observation 关联。原生逐题均值仍不替代六类等权 AVG。
+
+当前 events_only 部署必须用 /api/public/experiments 与 /api/public/experiment-items 读回核验。旧 dataset-run-items POST 虽接受但不创建新 Experiments 页面记录；早期尝试回执留作审计，不将其算成成功实验关联。v4 实验属性增强先经合成验收，确认原有 span ID、token 与 Score 不变后才用于真实运行；最后再次执行完整入库对账。
+
+151576 v4 实验验收：10 个 native experiment，各训练 772、验证 380 个 item，全部 trace/observation 关联一致。实验属性增强完成后又通过原记录全量对账（47,198 observation，17,320 Score，usage 一致，无重复）。界面 Experiments 可排除 Dataset rsi-integration-synthetic-v2；首页选择 research 环境。外部浏览器不共享应用内浏览器筛选，请在对应浏览器设置。

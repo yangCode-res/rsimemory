@@ -137,7 +137,7 @@ def main():
     run_ids={k:v[:args.patients_per_split] if args.patients_per_split else v for k,v in split.items() if k!='test'}
     run_queries={k:representative_queries(queries,v,args.checkpoint,args.per_type) for k,v in run_ids.items()}
     out.mkdir(parents=True)
-    with trace_run(out/'traces.jsonl', run_id=out.name,
+    with trace_run(out/'traces.jsonl', run_id=(out.parent.name if out.name == 'result' else out.name),
                    metadata={'implementation_commit':config['implementation_commit'],
                              'contract_version':config['contract_version'], 'fixture':args.fixture,
                              'rationale_schema':config['rationale_schema']}) as round_span:

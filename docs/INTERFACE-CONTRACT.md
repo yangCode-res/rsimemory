@@ -1,5 +1,7 @@
 # Memory Policy Interface Contract
 
+2026-10-21 更新：优化器诊断使用完整训练分布与覆盖采样的 12 个失败＋4 个成功；应用层输入预算为 null，取消字段/列表摘录和超预算删案例。完整父源码与全部选中案例保留，物理 provider 上下文超限作为显式失败留档。提示版本为 `explore-v3-full-diagnostics`；policy v0.3 入口、查询只读、冻结 actor、隔离和评分规则不变。详见 [problem.md](../problem.md)。
+
 当前 v0.3 工程实现与验证见 [VALIDATION-v0.3](VALIDATION-v0.3.md)；历史 v0.2 记录保持原样。
 
 版本：0.3　日期：2026年10月13日　状态：对象快照协议升级；v0.3 实现与运行验证另行记录，正式参数待冻结。

@@ -62,6 +62,19 @@ class ParentSourceTests(unittest.TestCase):
             self.assertEqual(manifest,source_manifest(source,'zh'))
             config = json.loads((out/'config.json').read_text())
             self.assertEqual(config['parent_source_sha256'],manifest['sha256'])
+            self.assertIsNone(config['reflexion_input_budget'])
+            self.assertEqual(config['evolution_prompt_version'],'explore-v3-full-diagnostics')
+            diagnostics=out/'diagnostics'
+            summary=json.loads((diagnostics/'summary.json').read_text())
+            selected=json.loads((diagnostics/'selection.json').read_text())
+            examples=json.loads((diagnostics/'examples.json').read_text())
+            index=[json.loads(line) for line in (diagnostics/'index.jsonl').read_text().splitlines()]
+            self.assertEqual(summary['total_questions'],12)
+            self.assertEqual(len(index),12)
+            train_ids=set(json.loads((out/'run_patients.json').read_text())['train'])
+            self.assertEqual({int(row['patient']) for row in index},train_ids)
+            self.assertEqual(selected['selected_case_ids'],[e['query_id'] for e in examples])
+            self.assertEqual(selected['actual']['successes'],4)
         self.assertEqual(len(client.optimizer_inputs),4)
         for role, payload in client.optimizer_inputs:
             self.assertEqual(payload['parent_code'],source)

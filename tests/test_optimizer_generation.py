@@ -90,6 +90,17 @@ class OptimizerGeneration(unittest.TestCase):
         self.assertIn('mechanism',result['proposals'][0])
         self.assertIn('falsification_test',result['proposals'][0])
 
+    def test_no_diagnosis_cli_skips_training_index_and_oracle_interventions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out=Path(temp)/'run'
+            with patch.object(sys,'argv',['rsi','--fixture','--evolve','--no-diagnosis','--output',str(out)]), \
+                 patch('rsi.cli.intervention',side_effect=AssertionError('oracle must not run')), \
+                 patch('rsi.cli.build_training_diagnostics',side_effect=AssertionError('diagnostics must not run')), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                main()
+            self.assertFalse((out/'diagnostics').exists())
+            self.assertEqual(json.loads((out/'interventions.json').read_text()),[])
+
     def test_confidence_word_is_not_accepted_as_causal_explanation(self):
         class ConfidenceOnly(FixtureClient):
             def complete(self,messages,**kwargs):
@@ -99,6 +110,27 @@ class OptimizerGeneration(unittest.TestCase):
                 return response
         with self.assertRaisesRegex(ValueError,'explanation'):
             reflect(ConfidenceOnly(),[],{},[],'parent')
+
+    def test_full_parent_interventions_and_successes_are_not_budget_trimmed(self):
+        class Capture(FixtureClient):
+            def complete(self,messages,**kwargs):
+                self.prompt=json.loads(messages[1]['content'])
+                return super().complete(messages,**kwargs)
+        client=Capture()
+        rows=[{'query_id':str(i),'persona_id':i+1,'session_id':10,
+               'query_type':'state_update','question':'synthetic',
+               'answer':'answer','score':i%2,'reason':'synthetic',
+               'evidence':[],'trajectory':[]} for i in range(8)]
+        lookup={str(i):{'positive_answers':['reference']} for i in range(8)}
+        interventions=[{'detail':'complete intervention '*2000,'items':list(range(10))}
+                       for _ in range(7)]
+        result=reflect(client,rows,lookup,interventions,'parent-source '*3000)
+        self.assertEqual(client.prompt['interventions'],interventions)
+        self.assertEqual(client.prompt['parent_code'],'parent-source '*3000)
+        self.assertEqual(len(client.prompt['examples']),8)
+        self.assertEqual(sum(e['score']==1 for e in client.prompt['examples']),4)
+        self.assertIsNone(result['diagnostic_input_budget'])
+        self.assertFalse(result['diagnostic_input_truncated'])
 
 
 if __name__=='__main__':

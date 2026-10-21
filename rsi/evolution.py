@@ -6,6 +6,9 @@ import json
 import math
 from .sandbox import validate_source
 from .tracing import trace_span
+from .diagnostics import build_training_diagnostics
+
+REFLECTION_PROMPT_VERSION = 'explore-v3-full-diagnostics'
 
 REFLECTION_SCHEMA = {
     'type':'object', 'additionalProperties':False, 'required':['clusters','proposals'],
@@ -28,45 +31,31 @@ REFLECTION_SCHEMA = {
                           'uncertainty':{'enum':['low','medium','high']}}}}}}
 
 
-def compact_example(value, text_limit=500):
-    """Bound diagnostic excerpts without producing broken JSON or hidden data."""
-    if isinstance(value, str):
-        return value if len(value) <= text_limit else value[:text_limit]+' [excerpt truncated]'
-    if isinstance(value, list):
-        return [compact_example(v, text_limit) for v in value[:5]]
-    if isinstance(value, dict):
-        return {k: compact_example(v, text_limit) for k, v in value.items()}
-    return value
-
-
 def reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True,
-            policy_context=None):
+            policy_context=None, diagnostics=None):
     with trace_span('reflexion', metadata={'role':'reflexion', 'evidence_scope':'train_only'}) as observation:
         result = _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis,
-                          policy_context)
+                          policy_context, diagnostics)
         observation.update(output=result)
         return result
 
 
 def _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True,
-             policy_context=None):
-    examples = []
-    if with_diagnosis:
-        # Keep failed and successful cases, never validation item-level results.
-        chosen = [r for r in answers if r['score'] == 0][:4]+[r for r in answers if r['score'] == 1][:2]
-        for r in chosen:
-            q = query_lookup[r['query_id']]
-            examples.append({k: r[k] for k in ['query_id','query_type','question','answer','score','reason','evidence','trajectory']})
-            examples[-1]['reference_answers'] = q['positive_answers']
-            examples[-1]['source_evidence'] = q.get('evidence', [])
+             policy_context=None, diagnostics=None):
+    bundle = ((diagnostics if diagnostics is not None else
+               build_training_diagnostics(answers, query_lookup)) if with_diagnosis else None)
+    examples = bundle['examples'] if bundle else []
     context = dict(policy_context or {})
     if not with_diagnosis:
         context.pop('parent_train_metrics',None)
     prompt = {'task': 'Improve memory-policy AVG across all task families under measured costs; answering system is frozen.',
-              'prompt_version':'explore-v2',
-              'parent_code': parent_code, 'parent_context':context, 'examples': [],
-              'interventions': compact_example(interventions) if with_diagnosis else [],
-              'diagnostic_excerpts': True,
+              'prompt_version':REFLECTION_PROMPT_VERSION,
+              'parent_code': parent_code, 'parent_context':context, 'examples': examples,
+              'training_diagnostics':bundle['summary'] if bundle else None,
+              'diagnostic_selection':bundle['selection'] if bundle else None,
+              'interventions': interventions if with_diagnosis else [],
+              'diagnostic_excerpts': False,
+              'diagnostic_input_budget': None,
               'required_output': {'clusters': [{'label':'string','case_ids':[], 'attribution':'string','uncertainty':'low/medium/high'}],
                                   'proposals':[{'direction':'string','hypothesis':'string','prediction':'string','risk':'string',
                                                 'basis':'training_cases/parent_code/exploratory','rationale':'brief observable basis',
@@ -96,33 +85,36 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
                              'Do not attach every case to every cluster without case-specific support. '
                              'Code-inspection and exploratory ideas may use empty case links; say the support is unmeasured. '
                              'Do not claim measured memory leaks, latency, or causation without supplied measurements. '
-                             'These are explicit hypotheses for audit, not requests for private chain-of-thought.'}
-    # Keep complete code; reduce only diagnostic excerpts uniformly before
-    # dropping examples. This engineering character cap leaves output headroom
-    # for the deployed 32k context; it is not an exact tokenizer budget.
-    for limit in (500, 300, 150, 75):
-        # The outer case list is not an excerpt list: retain all six selected
-        # cases unless the explicit engineering budget requires dropping one.
-        prompt['examples'] = [compact_example(example, limit) for example in examples]
-        if len(json.dumps(prompt, ensure_ascii=False)) <= 24000: break
-    while len(json.dumps(prompt, ensure_ascii=False)) > 24000 and prompt['examples']:
-        prompt['examples'].pop()
+                             'Use the all-training distributions to assess how representative each selected case is. '
+                             'Patient, task, time and observable-error groups are coverage axes, not verified causal clusters. '
+                             'Source-session hits are proxies: they do not prove the required facts were retrieved. '
+                             'Compare failures with the supplied successful controls; do not assume every wrong answer '
+                             'has the same memory cause. Selected example fields and intervention records are not '
+                             'excerpted by this prompt builder. These are explicit hypotheses for audit, not requests '
+                             'for private chain-of-thought.'}
+    # No application-level input budget: preserve the full parent and every
+    # selected case, list and intervention. Physical provider limits are errors,
+    # never a reason to silently truncate or drop diagnostic controls.
     serialized = json.dumps(prompt, ensure_ascii=False)
-    if len(serialized) > 24000:
-        raise ValueError('Reflexion parent/config exceeds engineering input budget')
     with trace_span('diagnostic-input', input=prompt,
                     metadata={'actual_model_input':True, 'input_chars':len(serialized),
                               'diagnostic_example_count':len(prompt['examples']),
-                              'parent_code_sha256':hashlib.sha256(parent_code.encode()).hexdigest()}) as observation:
+                              'parent_code_sha256':hashlib.sha256(parent_code.encode()).hexdigest(),
+                              'diagnostic_input_budget':None,
+                              'diagnostic_selection_version':bundle['selection']['version'] if bundle else None}) as observation:
         observation.update(output={'selected_case_ids':[e['query_id'] for e in prompt['examples']],
-                                   'selection':'first 4 scored failures + first 2 successes, excerpt/budget bounded'})
+                                   'selection':bundle['selection'] if bundle else None,
+                                   'training_summary':bundle['summary'] if bundle else None,
+                                   'input_truncated':False})
     response = client.complete([{'role':'system','content':
                                 'You design and diagnose memory-management policies offline. The answering agent is frozen; '
                                 'policy internals may be redesigned substantially. Seek testable gains in the AVG/cost frontier, '
                                 'not minimum edit distance or minimum risk. Produce exactly three mechanism-diverse proposals. '
                                 'Ground claims in the supplied active configuration and training evidence, distinguish observation '
                                 'from inference, and permit ambitious exploratory hypotheses with explicit uncertainty. '
-                                'Excerpts may be truncated. Explain enough for an independent reviewer to test each mechanism; '
+                                'The all-training summary and representative failures/successes are supplied together. '
+                                'Observed error groups do not by themselves establish causal mechanisms. '
+                                'Explain enough for an independent reviewer to test each mechanism; '
                                 'there is no arbitrary 150-character field limit. Return valid JSON, no markdown.'},
                                 {'role':'user','content':serialized}],role='reflexion',json_mode=True,json_schema=REFLECTION_SCHEMA)
     obj = json.loads(response['text'])
@@ -161,7 +153,10 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
     obj['diagnostic_example_count'] = len(prompt['examples'])
     obj['diagnostic_case_ids'] = [e['query_id'] for e in prompt['examples']]
     obj['rationale_schema'] = 'evidence-v3'
-    obj['prompt_version'] = 'explore-v2'
+    obj['prompt_version'] = REFLECTION_PROMPT_VERSION
+    obj['diagnostic_input_budget'] = None
+    obj['diagnostic_input_truncated'] = False
+    obj['diagnostic_selection'] = bundle['selection'] if bundle else None
     obj['rationale_status'] = 'model_reported_hypotheses_not_verified_causes'
     return obj
 

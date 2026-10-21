@@ -96,7 +96,7 @@ class PipelineIntegration(unittest.TestCase):
                  'failed':{'AVG':None}}
         self.assertEqual(set(pareto(reports)),{'cheap','accurate'})
 
-    def test_reflection_bounds_diagnostics_and_keeps_json(self):
+    def test_reflection_preserves_large_input_and_every_selected_field(self):
         class CaptureClient(FixtureClient):
             def complete(self,messages,**kwargs):
                 self.messages=messages
@@ -108,10 +108,19 @@ class PipelineIntegration(unittest.TestCase):
         lookup={str(i):{'positive_answers':['金'*20000],'evidence':[]} for i in range(8)}
         result=reflect(client,rows,lookup,[],'baseline'*1200)
         payload=json.loads(client.messages[1]['content'])
-        self.assertLessEqual(result['input_chars'],24000)
+        self.assertGreater(result['input_chars'],24000)
         self.assertEqual(payload['parent_code'],'baseline'*1200)
-        self.assertTrue(payload['diagnostic_excerpts'])
-        self.assertTrue(payload['examples'])
+        self.assertFalse(payload['diagnostic_excerpts'])
+        self.assertIsNone(payload['diagnostic_input_budget'])
+        self.assertEqual(len(payload['examples']),8)
+        self.assertEqual(sum(e['score']==1 for e in payload['examples']),4)
+        for example in payload['examples']:
+            self.assertEqual(example['question'],'问'*20000)
+            self.assertEqual(example['answer'],'答'*20000)
+            self.assertEqual(example['reason'],'证'*20000)
+            self.assertEqual(example['reference_answers'],['金'*20000])
+            self.assertEqual(example['evidence'],[{'text':'记'*20000}]*20)
+        self.assertFalse(result['diagnostic_input_truncated'])
 
     def test_rejected_source_is_preserved_without_execution(self):
         class InvalidCodeClient:

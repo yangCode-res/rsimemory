@@ -69,7 +69,7 @@ class ObservabilityIntegration(unittest.TestCase):
             reflect(UnsupportedEvidence(),rows,{'train-case':{'positive_answers':['synthetic']}},[],
                     'def initialize(config): return {}')
 
-    def test_recorded_diagnostic_ids_match_exact_bounded_input(self):
+    def test_recorded_diagnostic_ids_match_exact_complete_selected_input(self):
         class CapturingClient(FixtureClient):
             def complete(self,messages,**kwargs):
                 self.input=json.loads(messages[1]['content'])
@@ -81,7 +81,7 @@ class ObservabilityIntegration(unittest.TestCase):
         result=reflect(client,rows,{str(i):{'positive_answers':['synthetic']} for i in range(8)},[],
                        'def initialize(config): return {}')
         self.assertEqual(result['diagnostic_case_ids'],[e['query_id'] for e in client.input['examples']])
-        self.assertEqual(result['diagnostic_example_count'],6)
+        self.assertEqual(result['diagnostic_example_count'],8)
         self.assertEqual(result['rationale_status'],'model_reported_hypotheses_not_verified_causes')
 
 

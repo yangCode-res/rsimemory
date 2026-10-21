@@ -39,7 +39,7 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 - v0.3 的候选运行目标为 Linux 独立 worker：Landlock 只允许读取 Python runtime，阻止读取私有数据文件和所有文件写入；seccomp 限制网络与进程控制等系统调用。失败时 fail closed；不声称这是通用安全审计或完整多租户安全保证。Linux 运行测试已验证上述边界；这不替代通用安全审计。
 - 初版根节点只展开一次；无诊断对照随后通过 --no-diagnosis 独立补跑。
 - 当前上下文采用字符限额，精确 tokenizer 预算待接。fixture 的模拟模型和 judge 只验证协议，不是科学成绩。
-- Reflexion 输入采用完整父版本代码与受限诊断摘录，工程上限 24000 字符；截断显式标记。调用失败写入 reflexion-failure.json，训练或验证评分不完整的版本不参加 Pareto 或训练收益回传。
+- Reflexion 输入使用完整父源码、全量训练诊断分布与覆盖采样案例，当前目标 12 个失败＋4 个成功；不设应用层输入预算，不截断字段/列表，也不按预算删除案例。物理服务上下文超限明确失败并留档。调用失败写入 reflexion-failure.json，训练或验证评分不完整的版本不参加 Pareto 或训练收益回传。
 - v0.3 的 cloudpickle 恢复不得发生在宿主编排进程；仅可在隔离 worker 完成 Landlock/seccomp 限制后进行。无法恢复或重新快照的对象按运行错误归档，不作兼容性假设。
 
 当前真实数据划分为训练 8 位、验证 4 位、测试 8 位，seed=20261013；原验证患者保持不变。完整记录见 [数据划分 v2](docs/DATA-SPLIT-v2.md)，历史运行保持原样。
@@ -55,3 +55,5 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 2026-10-19 的 `explore-v2` 修复父代码打包遗漏：初始父策略使用 `standalone-baseline-v1`，携带实际 imports、传递依赖（含 `_grams`）和 initialize/ingest/search 入口，可在独立隔离 worker 内执行。新运行记录 `parent-policy.py`、`parent-source.json` 及 config 源码 SHA256；反思与代码生成均获得完整父代码、实际语言和基线分词说明。允许采用其他分词、索引或记忆结构，不增加实现形式白名单。历史候选的分词修复另存有父 commit 的独立策略，不覆盖原运行，也不作为新生成的 RSI 成果。
 
 `finish_reason=length` 归档为 `generation_truncated`，保留实际模型响应与 token 用量，不再误记为契约错误；不完整代码不进入 replay。本次变更只作用于新运行，历史结果及 Langfuse 导入记录保持原样；参数与提示的调整本身不代表真实性能已改善。
+
+2026-10-21 的 `explore-v3-full-diagnostics` 修复诊断选样和输入压缩：完整训练日志建立索引，按患者、任务、早中晚检查点和可观察错误组覆盖采样，保留成功对照；每个新 run 的 `diagnostics/` 保存 index、summary、selection 和完整 examples。移除旧的 24000 字符上限及所有摘录/删案例逻辑，`reflexion_input_budget=null`。全量 Slurm 脚本使用已核验模型原生上下文 262144，actor/judge 请求预算不变。五项问题与本轮只改 1、2 的范围见 [problem.md](problem.md)。

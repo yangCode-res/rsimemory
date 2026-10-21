@@ -1,5 +1,7 @@
 # RSI 记忆管理 Policy 进化系统 PRD
 
+2026-10-21 实现更新：当前 Reflexion 使用 `explore-v3-full-diagnostics` 和 `training-diagnostics-coverage-v1`。对全部训练题建立诊断索引和分布，覆盖采样目标 12 个失败＋4 个成功；完整传入选中案例和父源码，不设应用层输入预算、不截断字段/列表、不因预算删案例。物理服务超限明确失败。此更新替代历史选样和诊断摘录策略，不修改冻结 actor、评分和树选择规则；范围与问题清单见 [problem.md](../problem.md)。
+
 当前 v0.3 工程实现与验证见 [VALIDATION-v0.3](VALIDATION-v0.3.md)；历史 v0.2 记录保持原样。
 
 版本：0.3　日期：2026年10月13日　状态：policy state 快照协议升级；本版本实现与运行验证另行记录，正式比较参数仍待冻结。

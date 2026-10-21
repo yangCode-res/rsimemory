@@ -11,7 +11,8 @@ import sys
 from importlib.metadata import version, PackageNotFoundError
 from urllib.error import URLError
 from .data import load_medmemory, patient_splits, representative_queries, SPLIT_VERSION
-from .evolution import reflect, generate, new_node, backprop, pareto
+from .evolution import reflect, generate, new_node, backprop, pareto, REFLECTION_PROMPT_VERSION
+from .diagnostics import build_training_diagnostics
 from .fixtures import FixtureClient, dataset as fixture_dataset
 from .model import ModelClient, ModelServiceUnavailable
 from .policy import PlainPolicy, GeneratedPolicy
@@ -105,7 +106,10 @@ def main():
         'codegen':{'max_tokens':args.codegen_max_tokens,'temperature':args.codegen_temperature,
                    'timeout_s':args.optimizer_timeout_s}}
     config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v3'
-    config['evolution_prompt_version']='explore-v2'
+    config['evolution_prompt_version']=REFLECTION_PROMPT_VERSION
+    config['diagnostic_selection_version']='training-diagnostics-coverage-v1'
+    config['reflexion_input_budget']=None
+    config['reflexion_case_targets']={'failures':12,'successes':4}
     config['parent_source_version']=SOURCE_VERSION
     config['python_version']=sys.version.split()[0]
     try: config['cloudpickle_version']=version('cloudpickle')
@@ -181,7 +185,18 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
     lookup={q['query_id']:q for q in run_queries['train']}
     branches=[];seen_code={}
     if args.evolve:
-        interventions=intervention(train_rows,lookup,actor_client,judge_client,sessions,args.max_interventions) if args.max_interventions>0 else []
+        diagnostics = None
+        if not args.no_diagnosis:
+            diagnostics=build_training_diagnostics(train_rows,lookup,seed=config['seed'])
+            directory=out/'diagnostics'
+            directory.mkdir()
+            with (directory/'index.jsonl').open('w') as stream:
+                for row in diagnostics['index']:
+                    stream.write(json.dumps(row,ensure_ascii=False)+'\n')
+            dump(directory/'summary.json',diagnostics['summary'])
+            dump(directory/'selection.json',diagnostics['selection'])
+            dump(directory/'examples.json',diagnostics['examples'])
+        interventions=intervention(train_rows,lookup,actor_client,judge_client,sessions,args.max_interventions) if not args.no_diagnosis and args.max_interventions>0 else []
         dump(out/'interventions.json',interventions)
         try:
             context={'active_parent_config':{
@@ -194,7 +209,7 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
                 'parent_train_metrics':{'comparison':comparison_metric(train),
                     'type_accuracy':train.get('type_accuracy',{}),'counts':train.get('counts',{})}}
             diagnosis=reflect(optimizer,train_rows,lookup,interventions,root_code,
-                              not args.no_diagnosis,policy_context=context)
+                              not args.no_diagnosis,policy_context=context,diagnostics=diagnostics)
             dump(out/'reflexion.json',diagnosis)
         except ModelServiceUnavailable:
             raise

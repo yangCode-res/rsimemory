@@ -1,5 +1,7 @@
 # Memory Policy RSI：项目交接说明
 
+**2026-10-21 当前整改**：五项问题记录于 [problem.md](problem.md)。本轮仅改问题 1、2：全量训练诊断索引/分布＋覆盖采样 12 失败/4 成功，保留完整选中案例，删除应用层输入预算与全部摘录/预算删案例逻辑。当前提示 `explore-v3-full-diagnostics`、选样 `training-diagnostics-coverage-v1`，`reflexion_input_budget=null`。旧文中“最多六例”“24000 字符摘录”仅描述历史版本，不再用于新运行。Slurm 服务默认上下文扩至已核验模型原生 262144，冻结 actor/judge 请求参数不变；问题 3、4、5 后续再做，评分/奖励不变。最新完成性能实验仍为 151576，新运行状态另记于 problem.md 和 runs/ 的启动记录。
+
 更新日期：2026-10-21，Asia/Shanghai。最新完整实验为 Slurm 作业 **151576**；运行使用代码 commit `a4d8bd2f79458ad0faa54af24125bdef541aeec5`。这是接手说明，不替代实际代码、冻结的 run config 或原始运行记录。
 
 ## 1. 项目目标与研究边界

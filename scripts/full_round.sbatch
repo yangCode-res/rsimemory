@@ -87,6 +87,10 @@ echo PREFLIGHT_OK
 COPY_PID=$!
 echo model_starting > "$META/status"
 export PORT=7862 HOST=127.0.0.1 TP_SIZE=2
+# The diagnostic input is never clipped by the application. Use the model's
+# verified native context capacity; actor/judge request budgets stay frozen.
+export CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
+printf '%s\n' "$CONTEXT_LENGTH" > "$META/service-context-length"
 setsid bash "$CODE/scripts/launch_sglang_local.sh" > "$ARTIFACTS/server.log" 2>&1 &
 PID=$!
 ready=0

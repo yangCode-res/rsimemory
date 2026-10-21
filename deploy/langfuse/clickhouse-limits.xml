@@ -1,8 +1,8 @@
 <clickhouse>
   <listen_host replace="replace">127.0.0.1</listen_host>
   <interserver_http_host>127.0.0.1</interserver_http_host>
-  <max_server_memory_usage>4294967296</max_server_memory_usage>
-  <mark_cache_size>536870912</mark_cache_size>
+  <max_server_memory_usage>12884901888</max_server_memory_usage>
+  <mark_cache_size>134217728</mark_cache_size>
   <uncompressed_cache_size>0</uncompressed_cache_size>
   <background_pool_size>16</background_pool_size>
   <background_schedule_pool_size>4</background_schedule_pool_size>

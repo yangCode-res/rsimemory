@@ -24,7 +24,7 @@
 
 namespace/bridge 的 PID、UNIX socket、Podman runroot 和软件解压缓存放在权限 0700 的 `/tmp/rsi-langfuse-1035/`，可在重启后重建；此目录不保存数据库或用户轨迹。服务的软件原档和全部持久数据均在 `/file_storage01`。
 
-启动器将新启动进程的 CPU affinity 限定到四个可用 CPU；ClickHouse 服务器内存上限 4 GiB，查询四线程、单查询内存 2 GiB；Node heap 上限每进程 2 GiB。未启用宿主 cgroups 管理，这些设置不构成整个栈的总 RSS 硬限制。遥测已关闭；隔离网络不配置外部出口，在线版本检查可能记录 DNS 失败，不影响轨迹入库。
+启动器将新启动进程的 CPU affinity 限定到四个可用 CPU；ClickHouse 服务器内存上限 12 GiB，查询四线程、单查询内存 2 GiB；Node heap 上限每进程 2 GiB。未启用宿主 cgroups 管理，这些设置不构成整个栈的总 RSS 硬限制。遥测已关闭；隔离网络不配置外部出口，在线版本检查可能记录 DNS 失败，不影响轨迹入库。
 
 ## 启停和状态
 
@@ -78,3 +78,5 @@ ssh -N -o ExitOnForwardFailure=yes \
 仍需原有 3000/9092 转发。凭据只在服务器读取，浏览器接收 HttpOnly 会话 cookie。
 这是共享实验账号入口：能访问该端口的人即获得默认账号权限，只通过既有 SSH 隧道使用。
 无需修改 Langfuse 镜像、数据库或原有密码认证；停止辅助进程即可撤销自动登录入口。
+
+2026-10-21：修复首页查询被全局内存上限中止的问题，将 ClickHouse 上限由 4 GiB 调为 12 GiB，mark cache 由 512 MiB 调为 128 MiB。保留单查询 2 GiB、四线程限制；已核验配置生效与项目聚合查询恢复。此限额不等于容器 RSS 硬上限。

@@ -335,3 +335,8 @@ Future scripts.langfuse_run imports automatically publish v2. This is still inde
 ## 2026-10-22 YAML五节点模型入口
 
 新增 --llm-config configs/llm-roles.yaml；actor/judge/diagnosis/proposals/codegen 可独立model/base_url/生成参数与api_key_env。diagnosis/proposals显式按阶段路由，调用统计与原generation角色兼容。并行副本仅在未指定URL时继承；解析结果与hash归档，resume拒绝配置变化，基线复用校验actor/judge实际角色配置。Slurm显式RSI_LLM_CONFIG启用。不自动部署模型/服务，不改当前153107，无新GPU作业。详见docs/LLM-ROLES.md。
+
+
+## 2026-10-22 首次真实连续搜索153572
+
+用户授权启动。作业153572已提交并确认RUNNING，节点gpu22；执行提交a25958cdd075df08afc90b6222686a932982b99a。显式启用连续搜索与configs/llm-roles.yaml：6新候选、每次2个、深度3、c=1.414、开发集validation E2E AVG奖励，测试集封存。6GPU/3个TP2副本；因旧基线缺少YAML角色指纹，本次不复用基线，重新评测BM25/BGE。预检隔离/快照/中文检索通过。启动回执runs/rerun-launch-153572.json，归档runs/full-v03-local-153572。RUNNING只表示已调度，模型健康及具体阶段仍需检查；不代表候选已生成或进化有效。

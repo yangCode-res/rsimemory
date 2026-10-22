@@ -1,0 +1,32 @@
+{
+  "job_id": 153572,
+  "implementation_commit": "a25958cdd075df08afc90b6222686a932982b99a",
+  "submitted_at": "2026-10-22T08:27:26.950882+00:00",
+  "mode": "continuous-v1",
+  "max_candidates": 6,
+  "children_per_expansion": 2,
+  "max_depth": 3,
+  "reward": "development_validation_E2E_AVG",
+  "test_evaluated": false,
+  "baseline_reuse": false,
+  "baseline_note": "Recompute; legacy baselines lack effective YAML role fingerprints",
+  "gpus": 6,
+  "replicas": 3,
+  "tp_per_replica": 2,
+  "candidate_workers": 3,
+  "excluded_nodes": [
+    "gpu36",
+    "gpu37"
+  ],
+  "search_profile_sha256": "9779357a5ace21a5690b8206c9d1a3578e63ced3cf9f6c7c354c9f362cd873b8",
+  "llm_yaml_sha256": "f9defd37ba9c16f23ad8d4777dcec169e23e553371f3704115e36706bd809734",
+  "archive": "/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/runs/full-v03-local-153572",
+  "command": [
+    "sbatch",
+    "--parsable",
+    "--job-name=memory-rsi-continuous6",
+    "--exclude=gpu36,gpu37",
+    "--export=ALL,RSI_CONTINUOUS_SEARCH=1,RSI_LLM_CONFIG=/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/configs/llm-roles.yaml,RSI_IMPLEMENTATION_COMMIT=a25958cdd075df08afc90b6222686a932982b99a,RSI_RESUME_BASELINES_FROM=",
+    "/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/scripts/full_round.sbatch"
+  ]
+}

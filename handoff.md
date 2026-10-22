@@ -281,3 +281,11 @@ ssh -N -L 127.0.0.1:3000:127.0.0.1:3000 \
 患者分组已启用：151576 的 5,760 条问题归入 12 个 run_id/patient-匿名编号 Session，同患者跨策略合并；全局进化与干预保留运行层。入口为 Sessions，Session ID contains full-v03-local-151576/patient-。新运行采集 patient 标签且后续导入自动按患者分组，历史已导入记录由 scripts.patient_view 增强并保留 v4 实验关联；不新增回答或 Score。当前实时导入/自动刷新仍未实现。
 
 患者匿名编号已映射为 Langfuse 原生 User ID；患者 Session 分组保持不变，后续新导入自动继承。已有运行通过 patient-view 的独立 User ID 增强回执补齐。
+
+## 2026-10-22 结构化反思与基线恢复
+
+旧运行 152743 的 BM25/BGE 训练、验证已完成，但反思三个 attribution 均为 medium 而被协议拒绝，未生成候选。旧 CLI 吞异常导致 Slurm completed/0，与业务失败不一致；旧 run 不改写。
+
+当前修复：explore-v4-structured-reflexion / evidence-v4-structured-diagnosis，先 diagnosis 后 proposals，原因假设与置信度独立；unresolved 不需编造原因。完整 12/4 案例、父代码和全训练 summary 在两个阶段均保留，不新增输入预算。每阶段最多一次纠正，reflexion/{diagnosis,proposals}/ 保存完整 attempt/result。失败写 run-status.json、summary.status=failed 并非零退出；候选正常执行完但无可评分候选另记 no_fully_scored_candidates，不伪称改进成功。
+
+--resume-baselines-from 仅复用经归档哈希、config-hash、冻结 runtime 文件、模型/数据/划分、完整进度/问题映射检查的基线产物；baseline-reuse.json 记录来源。新 run 重新诊断、代码生成，三个候选仍空状态完整回放，不恢复旧 policy 快照，不读 test。旧基线调用不伪造成新调用轨迹，成本保留原报告。原生 262144 服务上下文、8192/.7 反思与16384/.4代码生成输出设置不变。详见 docs/REFLEXION-v4.md。

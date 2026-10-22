@@ -27,13 +27,25 @@ class FixtureClient:
             else: result={'action':'final','answer':'A' if 'option' in question else 'ALPHA'}
         elif role == 'judge': result={'score':1,'reason':'synthetic fixture evaluator only'}
         elif role == 'reflexion':
-            result={'clusters':[{'label':'fixture','case_ids':[],'attribution':'synthetic protocol test','uncertainty':'high'}],
-                    'proposals':[{'direction':f'fixture-{i}','hypothesis':'protocol check','prediction':'runs','risk':'not research evidence',
-                                  'basis':'exploratory','rationale':'synthetic protocol test only',
-                                  'mechanism':'synthetic interface-preserving implementation',
-                                  'falsification_test':'fixture replay fails the expected interface or answer checks',
-                                  'supporting_case_ids':[], 'supporting_cluster_labels':[],
-                                  'uncertainty':'high'} for i in range(3)]}
+            payload=json.loads(messages[1]['content'])
+            if payload.get('stage') == 'diagnosis':
+                examples=payload.get('examples',[])
+                result={'clusters':([{'label':'fixture','observed_failure':'Synthetic fixture answer failed its expected check.',
+                                      'supporting_case_ids':[examples[0]['query_id']],
+                                      'cause_hypotheses':[{'mechanism':'Synthetic test fixture has no retrieval result.',
+                                                           'supporting_observations':['The fixture did not receive its synthetic expected result.'],
+                                                           'counter_evidence':['This fixture does not measure a research cause.'],
+                                                           'confidence':'high'}],
+                                      'attribution_status':'hypothesized',
+                                      'discriminating_test':'Replay the synthetic fixture and inspect the result.'}]
+                                    if examples else [])}
+            else:
+                result={'proposals':[{'direction':f'fixture-{i}','hypothesis':'protocol check','prediction':'runs','risk':'not research evidence',
+                                      'basis':'exploratory','rationale':'synthetic protocol test only',
+                                      'mechanism':'synthetic interface-preserving implementation',
+                                      'falsification_test':'fixture replay fails the expected interface or answer checks',
+                                      'supporting_case_ids':[], 'supporting_cluster_labels':[],
+                                      'uncertainty':'high'} for i in range(3)]}
         elif role == 'codegen':
             from .evolution import PARENT_CODE
             result={'code':PARENT_CODE}

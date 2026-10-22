@@ -58,16 +58,19 @@ class ObservabilityIntegration(unittest.TestCase):
         class UnsupportedEvidence(FixtureClient):
             def complete(self,messages,**kwargs):
                 result=super().complete(messages,**kwargs)
-                obj=json.loads(result['text'])
-                obj['proposals'][0].update(basis='training_cases',
-                    supporting_case_ids=['case-never-provided'],rationale='unverified claim')
-                result['text']=json.dumps(obj)
+                if json.loads(messages[1]['content']).get('stage') == 'proposals':
+                    obj=json.loads(result['text'])
+                    obj['proposals'][0].update(basis='training_cases',
+                        supporting_case_ids=['case-never-provided'],rationale='unverified claim')
+                    result['text']=json.dumps(obj)
                 return result
         rows=[{'query_id':'train-case','query_type':'state_update','question':'synthetic',
                'answer':'synthetic','score':0,'reason':'synthetic','evidence':[],'trajectory':[]}]
-        with self.assertRaisesRegex(ValueError,'absent'):
+        with self.assertRaises(ValueError) as caught:
             reflect(UnsupportedEvidence(),rows,{'train-case':{'positive_answers':['synthetic']}},[],
                     'def initialize(config): return {}')
+        self.assertTrue(any('case ID absent' in issue for issue in
+                            caught.exception.attempts['attempts'][-1]['validation_errors']))
 
     def test_recorded_diagnostic_ids_match_exact_complete_selected_input(self):
         class CapturingClient(FixtureClient):

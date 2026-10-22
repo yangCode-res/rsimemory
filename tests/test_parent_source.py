@@ -63,7 +63,7 @@ class ParentSourceTests(unittest.TestCase):
             config = json.loads((out/'config.json').read_text())
             self.assertEqual(config['parent_source_sha256'],manifest['sha256'])
             self.assertIsNone(config['reflexion_input_budget'])
-            self.assertEqual(config['evolution_prompt_version'],'explore-v3-full-diagnostics')
+            self.assertEqual(config['evolution_prompt_version'],'explore-v4-structured-reflexion')
             diagnostics=out/'diagnostics'
             summary=json.loads((diagnostics/'summary.json').read_text())
             selected=json.loads((diagnostics/'selection.json').read_text())
@@ -75,7 +75,7 @@ class ParentSourceTests(unittest.TestCase):
             self.assertEqual({int(row['patient']) for row in index},train_ids)
             self.assertEqual(selected['selected_case_ids'],[e['query_id'] for e in examples])
             self.assertEqual(selected['actual']['successes'],4)
-        self.assertEqual(len(client.optimizer_inputs),4)
+        self.assertEqual(len(client.optimizer_inputs),5)
         for role, payload in client.optimizer_inputs:
             self.assertEqual(payload['parent_code'],source)
             self.assertIn('def _grams(',payload['parent_code'])

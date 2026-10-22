@@ -48,12 +48,14 @@ config.json、splits.json、run_patients.json、各阶段 answers.jsonl/operatio
 
 轨迹分析采用服务器本地 JSONL 记录与独立 Langfuse 导入，接入方式、历史记录的证据边界见 [Langfuse 轨迹说明](docs/LANGFUSE.md)。
 
-优化器当前使用独立生成参数：Reflexion 输出上限 8192 tokens、temperature 0.7，代码生成输出上限 16384 tokens、temperature 0.4，超时均为 900 秒；actor/judge 仍为 1024 tokens、temperature 0。可通过 `--reflexion-max-tokens`、`--codegen-max-tokens`、`--reflexion-temperature`、`--codegen-temperature`、`--optimizer-timeout-s` 调整，最终参数写入运行配置和模型轨迹。全量脚本也接受对应的 `RSI_REFLEXION_*`、`RSI_CODEGEN_*`、`RSI_OPTIMIZER_TIMEOUT_S` 环境变量。输出预算不能突破服务端总上下文 32768 tokens；更大的父版本需要先核对输入长度，不能保证任意代码都能在一次生成内完成。
+优化器当前使用独立生成参数：Reflexion 输出上限 8192 tokens、temperature 0.7，代码生成输出上限 16384 tokens、temperature 0.4，超时均为 900 秒；actor/judge 仍为 1024 tokens、temperature 0。可通过 `--reflexion-max-tokens`、`--codegen-max-tokens`、`--reflexion-temperature`、`--codegen-temperature`、`--optimizer-timeout-s` 调整，最终参数写入运行配置和模型轨迹。全量脚本也接受对应的 `RSI_REFLEXION_*`、`RSI_CODEGEN_*`、`RSI_OPTIMIZER_TIMEOUT_S` 环境变量。输出预算不能突破服务端总上下文（全量脚本当前为原生 262144 tokens）；更大的父版本需要先核对输入长度，不能保证任意代码都能在一次生成内完成。
 
-`explore-v1` 反思提示以全任务 AVG/成本前沿为目标，允许替换记忆组织、索引、检索和 ingest 内部的更新/遗忘机制，不奖励低风险或最小改动；三个候选需探索不同机制，在有合理假设时包括结构性重构。输入增加父版本实际启用的配置和训练聚合指标，防止围绕未启用模块推断瓶颈。`evidence-v3` 提案在理由和证据引用之外记录 `mechanism`、`falsification_test`，取消每字段 150 字符限制。选出的四个失败与两个成功案例不再被外层列表隐式裁为五个，仍受显式 24000 字符输入预算约束。
+历史 `explore-v1` 反思提示以全任务 AVG/成本前沿为目标，允许替换记忆组织、索引、检索和 ingest 内部的更新/遗忘机制，不奖励低风险或最小改动；三个候选需探索不同机制，在有合理假设时包括结构性重构。输入增加父版本实际启用的配置和训练聚合指标，防止围绕未启用模块推断瓶颈。`evidence-v3` 提案在理由和证据引用之外记录 `mechanism`、`falsification_test`，取消每字段 150 字符限制。选出的四个失败与两个成功案例不再被外层列表隐式裁为五个，当时受显式 24000 字符输入预算约束，当前已取消。
 
 2026-10-19 的 `explore-v2` 修复父代码打包遗漏：初始父策略使用 `standalone-baseline-v1`，携带实际 imports、传递依赖（含 `_grams`）和 initialize/ingest/search 入口，可在独立隔离 worker 内执行。新运行记录 `parent-policy.py`、`parent-source.json` 及 config 源码 SHA256；反思与代码生成均获得完整父代码、实际语言和基线分词说明。允许采用其他分词、索引或记忆结构，不增加实现形式白名单。历史候选的分词修复另存有父 commit 的独立策略，不覆盖原运行，也不作为新生成的 RSI 成果。
 
 `finish_reason=length` 归档为 `generation_truncated`，保留实际模型响应与 token 用量，不再误记为契约错误；不完整代码不进入 replay。本次变更只作用于新运行，历史结果及 Langfuse 导入记录保持原样；参数与提示的调整本身不代表真实性能已改善。
 
 2026-10-21 的 `explore-v3-full-diagnostics` 修复诊断选样和输入压缩：完整训练日志建立索引，按患者、任务、早中晚检查点和可观察错误组覆盖采样，保留成功对照；每个新 run 的 `diagnostics/` 保存 index、summary、selection 和完整 examples。移除旧的 24000 字符上限及所有摘录/删案例逻辑，`reflexion_input_budget=null`。全量 Slurm 脚本使用已核验模型原生上下文 262144，actor/judge 请求预算不变。五项问题与本轮只改 1、2 的范围见 [problem.md](problem.md)。
+
+2026-10-22 的 `explore-v4-structured-reflexion` 将诊断与三个提案分为两个模型阶段，分别校验。诊断区分可观察失败、原因假设、支持/反证、置信度与判别测试；无法归因可用 unresolved 与空假设列表。每阶段默认最多纠正一次；完整输入、响应、字段错误保存在 `reflexion/{diagnosis,proposals}/`。纠正耗尽会写 failed 状态并以非零退出，不再吞掉异常后产生“成功的空进化”。恢复可用 `--resume-baselines-from <已验证旧result>`，仅在归档、冻结配置/代码、数据/患者/问题一致且基线完整时复用基线；三个候选仍从空状态 replay。协议与恢复说明见 [结构化反思](docs/REFLEXION-v4.md)。

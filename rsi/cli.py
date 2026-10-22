@@ -19,6 +19,7 @@ from .policy import PlainPolicy, GeneratedPolicy
 from .policy_source import baseline_source, source_manifest, SOURCE_VERSION
 from .runtime import replay, dump, intervention, call_cost
 from .tracing import trace_run, trace_span, write_failure_count
+from .resume import baseline_runtime_fingerprint, verify_baseline_resume, materialize_baseline_resume
 
 
 def commit_policy(repo, code, label, parent=None):
@@ -56,6 +57,28 @@ def _interrupt_replay(signum, frame):
     raise ModelServiceUnavailable('Replay interrupted by supervisor')
 
 
+def _set_stage(out, stage):
+    dump(out/'run-status.json', {'status':'running', 'stage':stage, 'test_evaluated':False})
+
+
+def _record_round_failure(out, exc, optimizer=None):
+    status_path=out/'run-status.json'
+    current=json.loads(status_path.read_text()) if status_path.exists() else {}
+    stage=getattr(exc,'stage',current.get('stage','initialization'))
+    failure={'status':'failed','stage':stage,'exception_type':type(exc).__name__,
+             'category':getattr(exc,'category','execution_error'),'test_evaluated':False}
+    dump(status_path,failure)
+    summary_path=out/'summary.json'
+    summary=json.loads(summary_path.read_text()) if summary_path.exists() else {'comparison':{},'branches':[]}
+    summary.update(status='failed',failure=failure,test_evaluated=False)
+    if optimizer is not None:
+        summary.setdefault('cost',{})['optimizer']=call_cost(optimizer.calls)
+    dump(summary_path,summary)
+    with (out/'REPORT.md').open('a') as stream:
+        stream.write('\n运行失败：'+stage+' / '+failure['exception_type']+'；未完成进化，不代表零个有效提案的成功实验。\n')
+    return summary
+
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--dataset')
@@ -80,7 +103,13 @@ def main():
     p.add_argument('--reflexion-temperature',type=float,default=0.7)
     p.add_argument('--codegen-temperature',type=float,default=0.4)
     p.add_argument('--optimizer-timeout-s',type=float,default=900.)
+    p.add_argument('--reflexion-max-corrections',type=int,default=1)
+    p.add_argument('--resume-baselines-from')
     args=p.parse_args()
+    if not 0 <= args.reflexion_max_corrections <= 2:
+        p.error('Reflexion corrections must be between 0 and 2')
+    if args.resume_baselines_from and not args.evolve:
+        p.error('--resume-baselines-from requires --evolve')
     if min(args.reflexion_max_tokens,args.codegen_max_tokens)<=0:
         p.error('Optimizer token budgets must be positive')
     if not all(math.isfinite(t) and 0<=t<=2 for t in
@@ -105,7 +134,9 @@ def main():
                      'timeout_s':args.optimizer_timeout_s},
         'codegen':{'max_tokens':args.codegen_max_tokens,'temperature':args.codegen_temperature,
                    'timeout_s':args.optimizer_timeout_s}}
-    config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v3'
+    config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v4-structured-diagnosis'
+    config['reflexion_stages']=['proposals'] if args.no_diagnosis else ['diagnosis','proposals']
+    config['baseline_runtime_sha256']=baseline_runtime_fingerprint()
     config['evolution_prompt_version']=REFLECTION_PROMPT_VERSION
     config['diagnostic_selection_version']='training-diagnostics-coverage-v1'
     config['reflexion_input_budget']=None
@@ -148,11 +179,17 @@ def main():
         round_span.update(input={'split_patient_counts':config['split_patient_counts'],
                                  'objective':'improve memory policy under a frozen actor',
                                  'language':args.language})
-        summary=_run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer)
+        try:
+            summary=_run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer)
+        except BaseException as exc:
+            summary=_record_round_failure(out,exc,optimizer)
+            round_span.update(output=summary,metadata={'trace_write_failures':write_failure_count()})
+            raise
         round_span.update(output=summary, metadata={'trace_write_failures':write_failure_count()})
 
 
 def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer):
+    _set_stage(out,'baseline.verification' if args.resume_baselines_from else 'baseline.train')
     root_code=baseline_source()
     parent_manifest=source_manifest(root_code, config['language'])
     config['parent_source_sha256']=parent_manifest['sha256']
@@ -163,14 +200,30 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
     root_commit=commit_policy(out/'policy-git',root_code,'plain-bm25')
     tree={'algorithm':'MCTS/UCT single expansion','nodes':{'plain-bm25':new_node('plain-bm25')},'c':1.414}
     tree['nodes']['plain-bm25']['commit']=root_commit
-    train,train_rows=replay(sessions,run_queries['train'],run_ids['train'],lambda:PlainPolicy(config),
-                            actor_client,judge_client,config,out/'plain-bm25'/'train')
-    validation,_=replay(sessions,run_queries['validation'],run_ids['validation'],lambda:PlainPolicy(config),
-                        actor_client,judge_client,config,out/'plain-bm25'/'validation')
+    reused=None
+    if args.resume_baselines_from:
+        plan=verify_baseline_resume(args.resume_baselines_from,config,split,run_ids,run_queries,
+                                    parent_manifest,code_root=Path(__file__).resolve().parent.parent)
+        reused=materialize_baseline_resume(plan,out)
+        train,train_rows,validation=plan['train_report'],plan['train_rows'],plan['validation_report']
+        with trace_span('baseline.reused',metadata={'actual_model_execution':False}) as observation:
+            observation.update(output=reused)
+    else:
+        train,train_rows=replay(sessions,run_queries['train'],run_ids['train'],lambda:PlainPolicy(config),
+                                actor_client,judge_client,config,out/'plain-bm25'/'train')
+        _set_stage(out,'baseline.validation')
+        validation,_=replay(sessions,run_queries['validation'],run_ids['validation'],lambda:PlainPolicy(config),
+                            actor_client,judge_client,config,out/'plain-bm25'/'validation')
     tree['nodes']['plain-bm25']['status']='evaluated' if train['AVG'] is not None and validation['AVG'] is not None else 'incomplete_scoring'
     comparisons={'plain-bm25':comparison_metric(validation)}
     semantic={'status':'skipped','reason':'no frozen semantic model supplied'}
-    if args.semantic_model_path:
+    if reused:
+        semantic=plan['semantic_status']
+        if args.semantic_model_path:
+            comparisons['plain-semantic']=comparison_metric(plan['semantic_validation_report'])
+            comparisons['plain-semantic']['valid']=semantic['status']=='evaluated'
+    elif args.semantic_model_path:
+        _set_stage(out,'baseline.semantic')
         sc=dict(config,semantic_model_path=args.semantic_model_path,semantic_weight=1.,bm25_weight=0.)
         try:
             st,_=replay(sessions,run_queries['train'],run_ids['train'],lambda:PlainPolicy(sc),actor_client,judge_client,sc,out/'plain-semantic'/'train')
@@ -182,9 +235,13 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
             raise
         except Exception as exc: semantic={'status':'failed','reason':str(exc)}
     dump(out/'semantic-status.json',semantic)
+    dump(out/'tree.json',tree)
+    dump(out/'summary.json',{'status':'running','comparison':comparisons,'branches':[],
+                            'baseline_reuse':reused,'test_evaluated':False})
     lookup={q['query_id']:q for q in run_queries['train']}
     branches=[];seen_code={}
     if args.evolve:
+        _set_stage(out,'diagnostics')
         diagnostics = None
         if not args.no_diagnosis:
             diagnostics=build_training_diagnostics(train_rows,lookup,seed=config['seed'])
@@ -198,6 +255,7 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
             dump(directory/'examples.json',diagnostics['examples'])
         interventions=intervention(train_rows,lookup,actor_client,judge_client,sessions,args.max_interventions) if not args.no_diagnosis and args.max_interventions>0 else []
         dump(out/'interventions.json',interventions)
+        _set_stage(out,'reflexion')
         try:
             context={'active_parent_config':{
                 'retrieval_mode':'lexical_bm25','semantic_weight':0.,
@@ -209,15 +267,17 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
                 'parent_train_metrics':{'comparison':comparison_metric(train),
                     'type_accuracy':train.get('type_accuracy',{}),'counts':train.get('counts',{})}}
             diagnosis=reflect(optimizer,train_rows,lookup,interventions,root_code,
-                              not args.no_diagnosis,policy_context=context,diagnostics=diagnostics)
+                              not args.no_diagnosis,policy_context=context,diagnostics=diagnostics,
+                              max_corrections=args.reflexion_max_corrections,artifact_dir=out/'reflexion')
             dump(out/'reflexion.json',diagnosis)
-        except ModelServiceUnavailable:
-            raise
         except Exception as exc:
-            diagnosis={'proposals': [], 'status':'failed'}
-            dump(out/'reflexion-failure.json',{'reason':f'{type(exc).__name__}: {exc}'})
+            dump(out/'reflexion-failure.json',{'exception_type':type(exc).__name__,
+                 'stage':getattr(exc,'stage','reflexion'), 'category':getattr(exc,'category','execution_error'),
+                 'attempt_artifacts':'reflexion/', 'status':'failed'})
+            raise
         for i,proposal in enumerate(diagnosis['proposals']):
             name=f'candidate-{i+1}';node=new_node(name,'plain-bm25');node['proposal']=proposal;tree['nodes'][name]=node
+            dump(out/'tree.json',tree)
             with trace_span('evolution.proposal', input=proposal,
                             metadata={'policy':name, 'parent_policy':'plain-bm25',
                                       'rationale_status':'model_reported_hypothesis'}) as observation:
@@ -230,6 +290,7 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
             branch=out/'branches'/name;branch.mkdir(parents=True)
             dump(branch/'proposal.json',proposal)
             stage='codegen'
+            _set_stage(out,name+'.'+stage)
             try:
                 with trace_span('candidate.codegen', metadata={'policy':name, 'parent_policy':'plain-bm25'},
                                 input={'proposal':proposal}) as observation:
@@ -242,13 +303,17 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
                     raise ValueError('Duplicate generated code: '+seen_code[code_hash])
                 seen_code[code_hash]=name
                 node['commit']=commit_policy(out/'policy-git',source,name,root_commit)
+                dump(out/'tree.json',tree)
                 factory=lambda source=source:GeneratedPolicy(source,config,timeout_s=args.candidate_timeout_s,memory_bytes=args.candidate_memory_mb*1024*1024)
                 # Constructor verifies mandatory OS isolation before any replay.
                 stage='initialize'
+                _set_stage(out,name+'.'+stage)
                 factory()
                 stage='train'
+                _set_stage(out,name+'.'+stage)
                 t,_=replay(sessions,run_queries['train'],run_ids['train'],factory,actor_client,judge_client,config,branch/'train')
                 stage='validation'
+                _set_stage(out,name+'.'+stage)
                 v,_=replay(sessions,run_queries['validation'],run_ids['validation'],factory,actor_client,judge_client,config,branch/'validation')
                 node['status']='evaluated' if t['AVG'] is not None and v['AVG'] is not None else 'incomplete_scoring'
                 node['train_AVG']=t['AVG'];node['validation_AVG']=v['AVG']
@@ -271,13 +336,20 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
             with trace_span('candidate.result', metadata={'policy':name}) as observation:
                 observation.update(output=node)
             branches.append(node)
+            dump(out/'summary.json',{'status':'running','comparison':comparisons,'branches':branches,
+                                    'baseline_reuse':reused,'test_evaluated':False})
     dump(out/'tree.json',tree)
-    summary={'contract_version':config['contract_version'],'fixture':args.fixture,'scientific_result':False if args.fixture else 'engineering rubric; uncalibrated',
+    summary={'status':'completed','baseline_reuse':reused,
+             'evolution_outcome':('evaluated_candidates' if any(n['status']=='evaluated' for n in branches) else
+                                  'no_fully_scored_candidates') if args.evolve else 'not_requested',
+             'contract_version':config['contract_version'],'fixture':args.fixture,'scientific_result':False if args.fixture else 'engineering rubric; uncalibrated',
              'comparison':comparisons,'pareto':pareto(comparisons),'branches':branches,
              'semantic':semantic,'cost':{'optimizer':call_cost(optimizer.calls),
                                        'intervention':call_cost([c for r in (interventions if args.evolve else []) for c in r['call_log']])},
              'test_evaluated':False,'no_diagnosis_control':args.no_diagnosis}
     dump(out/'summary.json',summary)
+    dump(out/'run-status.json',{'status':'completed','stage':'round.finished',
+                              'evolution_outcome':summary['evolution_outcome'],'test_evaluated':False})
     with trace_span('round.result') as observation:
         observation.update(output=summary)
     lines=['# 工程运行报告', '', '此运行用于协议和工程验证，未经过论文级 judge 校准。',

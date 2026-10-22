@@ -1,5 +1,7 @@
 # RSI 记忆管理 Policy 进化系统 PRD
 
+2026-10-22 更新：离线链路升级 `explore-v4-structured-reflexion` / `evidence-v4-structured-diagnosis`，诊断与三个提案分阶段；观察、机制假设、置信度分字段，允许 unresolved。每阶段默认一次有限纠正，完整记录各次请求/响应/字段错误；耗尽以 failed、非零退出。经校验的基线可在新 run 复用，候选仍从空状态完整 replay。冻结回答协议、policy 实现自由度与评分/奖励规则不变。详见 [结构化反思与恢复](REFLEXION-v4.md)。
+
 2026-10-21 实现更新：当前 Reflexion 使用 `explore-v3-full-diagnostics` 和 `training-diagnostics-coverage-v1`。对全部训练题建立诊断索引和分布，覆盖采样目标 12 个失败＋4 个成功；完整传入选中案例和父源码，不设应用层输入预算、不截断字段/列表、不因预算删案例。物理服务超限明确失败。此更新替代历史选样和诊断摘录策略，不修改冻结 actor、评分和树选择规则；范围与问题清单见 [problem.md](../problem.md)。
 
 当前 v0.3 工程实现与验证见 [VALIDATION-v0.3](VALIDATION-v0.3.md)；历史 v0.2 记录保持原样。

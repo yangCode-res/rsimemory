@@ -103,6 +103,11 @@ done
 [[ "$ready" == 1 ]] || { echo SERVER_TIMEOUT; exit 1; }
 echo replay_running > "$META/status"
 echo MODEL_READY_FULL_REPLAY_START
+RESUME_ARGS=()
+if [[ -n "${RSI_RESUME_BASELINES_FROM:-}" ]]; then
+  RESUME_ARGS=(--resume-baselines-from "$RSI_RESUME_BASELINES_FROM")
+  printf '%s\n' "$RSI_RESUME_BASELINES_FROM" > "$META/baseline-resume-source"
+fi
 setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   --base-url http://127.0.0.1:7862/v1 \
   --reflexion-max-tokens "${RSI_REFLEXION_MAX_TOKENS:-8192}" \
@@ -110,6 +115,8 @@ setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   --reflexion-temperature "${RSI_REFLEXION_TEMPERATURE:-0.7}" \
   --codegen-temperature "${RSI_CODEGEN_TEMPERATURE:-0.4}" \
   --optimizer-timeout-s "${RSI_OPTIMIZER_TIMEOUT_S:-900}" \
+  --reflexion-max-corrections "${RSI_REFLEXION_MAX_CORRECTIONS:-1}" \
+  "${RESUME_ARGS[@]}" \
   --semantic-model-path "$ROOT/models/bge-small-zh-v1.5" --evolve &
 CLI_PID=$!
 setsid "$PY" "$CODE/scripts/service_monitor.py" \

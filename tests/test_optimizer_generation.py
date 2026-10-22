@@ -86,7 +86,8 @@ class OptimizerGeneration(unittest.TestCase):
         self.assertEqual(client.prompt['examples'],[])
         self.assertNotIn('parent_train_metrics',client.prompt['parent_context'])
         self.assertEqual(client.prompt['parent_context']['active_parent_config']['semantic_weight'],0)
-        self.assertEqual(result['rationale_schema'],'evidence-v3')
+        self.assertEqual(result['rationale_schema'],'evidence-v4-structured-diagnosis')
+        self.assertEqual(list(result['stage_records']),['proposals'])
         self.assertIn('mechanism',result['proposals'][0])
         self.assertIn('falsification_test',result['proposals'][0])
 
@@ -105,11 +106,18 @@ class OptimizerGeneration(unittest.TestCase):
         class ConfidenceOnly(FixtureClient):
             def complete(self,messages,**kwargs):
                 response=super().complete(messages,**kwargs)
-                obj=json.loads(response['text']);obj['clusters'][0]['attribution']='medium'
-                response['text']=json.dumps(obj)
+                payload=json.loads(messages[1]['content'])
+                if payload.get('stage') == 'diagnosis':
+                    obj=json.loads(response['text'])
+                    obj['clusters'][0]['cause_hypotheses'][0]['mechanism']='medium'
+                    response['text']=json.dumps(obj)
                 return response
-        with self.assertRaisesRegex(ValueError,'explanation'):
-            reflect(ConfidenceOnly(),[],{},[],'parent')
+        row={'query_id':'case-1','query_type':'state_update','question':'synthetic',
+             'answer':'synthetic','score':0,'reason':'synthetic','evidence':[],'trajectory':[]}
+        with self.assertRaises(ValueError) as caught:
+            reflect(ConfidenceOnly(),[row],{'case-1':{'positive_answers':['synthetic']}},[],'parent')
+        failure=caught.exception
+        self.assertIn('mechanism',failure.attempts['attempts'][0]['validation_errors'][0])
 
     def test_full_parent_interventions_and_successes_are_not_budget_trimmed(self):
         class Capture(FixtureClient):

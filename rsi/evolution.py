@@ -7,41 +7,24 @@ import math
 from .sandbox import validate_source
 from .tracing import trace_span
 from .diagnostics import build_training_diagnostics
+from .reflexion_protocol import (DIAGNOSIS_SCHEMA, PROPOSAL_SCHEMA,
+                                 call_validated_stage, validate_diagnosis,
+                                 validate_proposals)
 
-REFLECTION_PROMPT_VERSION = 'explore-v3-full-diagnostics'
-
-REFLECTION_SCHEMA = {
-    'type':'object', 'additionalProperties':False, 'required':['clusters','proposals'],
-    'properties': {
-        'clusters': {'type':'array','maxItems':6,'items':{
-            'type':'object','additionalProperties':False,
-            'required':['label','case_ids','attribution','uncertainty'],
-            'properties':{'label':{'type':'string'},'case_ids':{'type':'array','items':{'type':'string'}},
-                          'attribution':{'type':'string'},'uncertainty':{'enum':['low','medium','high']}}}},
-        'proposals': {'type':'array','minItems':3,'maxItems':3,'items':{
-            'type':'object','additionalProperties':False,
-            'required':['direction','hypothesis','prediction','risk','basis','rationale',
-                        'mechanism','falsification_test',
-                        'supporting_case_ids','supporting_cluster_labels','uncertainty'],
-            'properties':{**{k:{'type':'string'} for k in ['direction','hypothesis','prediction','risk','rationale',
-                                                         'mechanism','falsification_test']},
-                          'basis':{'enum':['training_cases','parent_code','exploratory']},
-                          'supporting_case_ids':{'type':'array','items':{'type':'string'}},
-                          'supporting_cluster_labels':{'type':'array','items':{'type':'string'}},
-                          'uncertainty':{'enum':['low','medium','high']}}}}}}
+REFLECTION_PROMPT_VERSION = 'explore-v4-structured-reflexion'
 
 
 def reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True,
-            policy_context=None, diagnostics=None):
+            policy_context=None, diagnostics=None, max_corrections=1, artifact_dir=None):
     with trace_span('reflexion', metadata={'role':'reflexion', 'evidence_scope':'train_only'}) as observation:
         result = _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis,
-                          policy_context, diagnostics)
+                          policy_context, diagnostics, max_corrections, artifact_dir)
         observation.update(output=result)
         return result
 
 
 def _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True,
-             policy_context=None, diagnostics=None):
+             policy_context=None, diagnostics=None, max_corrections=1, artifact_dir=None):
     bundle = ((diagnostics if diagnostics is not None else
                build_training_diagnostics(answers, query_lookup)) if with_diagnosis else None)
     examples = bundle['examples'] if bundle else []
@@ -56,13 +39,6 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
               'interventions': interventions if with_diagnosis else [],
               'diagnostic_excerpts': False,
               'diagnostic_input_budget': None,
-              'required_output': {'clusters': [{'label':'string','case_ids':[], 'attribution':'string','uncertainty':'low/medium/high'}],
-                                  'proposals':[{'direction':'string','hypothesis':'string','prediction':'string','risk':'string',
-                                                'basis':'training_cases/parent_code/exploratory','rationale':'brief observable basis',
-                                                'mechanism':'how the proposed memory operations change evidence availability or measured cost',
-                                                'falsification_test':'observation or comparison that would refute the hypothesis',
-                                                'supporting_case_ids':[], 'supporting_cluster_labels':[],
-                                                'uncertainty':'low/medium/high'}]},
               'search_guidance': 'The baseline implementation is a starting point, not a preferred architecture. '
                   'Explore any memory representation, indexing, retrieval/ranking, or ingest-time update, '
                   'consolidation and forgetting mechanism expressible through the existing policy interface. '
@@ -77,27 +53,20 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
                   'representations remain allowed; preserve useful evidence retrieval when redesigning internals. '
                   'Cost-only proposals need a relevant measured bottleneck or must be '
                   'explicitly exploratory. Describe the operational mechanism and a falsification test.',
-              'constraints': 'Return exactly three distinct proposals. If no reliable failure attribution exists, say so. '
-                             'Do not insert references or answers into policy code. Changes only affect memory state and retrieval. '
-                             'For each proposal report a concise evidence-based rationale, its basis, and uncertainty. '
+              'constraints': 'Do not insert references or answers into policy code. Changes only affect memory state and retrieval. '
                              'Only cite case IDs actually supplied in examples and exact cluster labels. '
-                             'Cluster attribution must explain the observed failure and inferred mechanism, not merely low/medium/high. '
-                             'Do not attach every case to every cluster without case-specific support. '
-                             'Code-inspection and exploratory ideas may use empty case links; say the support is unmeasured. '
                              'Do not claim measured memory leaks, latency, or causation without supplied measurements. '
                              'Use the all-training distributions to assess how representative each selected case is. '
                              'Patient, task, time and observable-error groups are coverage axes, not verified causal clusters. '
                              'Source-session hits are proxies: they do not prove the required facts were retrieved. '
-                             'Compare failures with the supplied successful controls; do not assume every wrong answer '
-                             'has the same memory cause. Selected example fields and intervention records are not '
-                             'excerpted by this prompt builder. These are explicit hypotheses for audit, not requests '
-                             'for private chain-of-thought.'}
+                             'Compare failures with supplied successful controls; do not assume every wrong answer has the same cause. '
+                             'These are explicit hypotheses for audit, not requests for private chain-of-thought.'}
     # No application-level input budget: preserve the full parent and every
     # selected case, list and intervention. Physical provider limits are errors,
     # never a reason to silently truncate or drop diagnostic controls.
     serialized = json.dumps(prompt, ensure_ascii=False)
-    with trace_span('diagnostic-input', input=prompt,
-                    metadata={'actual_model_input':True, 'input_chars':len(serialized),
+    with trace_span('diagnostic-bundle', input=prompt,
+                    metadata={'actual_model_input':False, 'input_chars':len(serialized),
                               'diagnostic_example_count':len(prompt['examples']),
                               'parent_code_sha256':hashlib.sha256(parent_code.encode()).hexdigest(),
                               'diagnostic_input_budget':None,
@@ -106,53 +75,84 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
                                    'selection':bundle['selection'] if bundle else None,
                                    'training_summary':bundle['summary'] if bundle else None,
                                    'input_truncated':False})
-    response = client.complete([{'role':'system','content':
-                                'You design and diagnose memory-management policies offline. The answering agent is frozen; '
-                                'policy internals may be redesigned substantially. Seek testable gains in the AVG/cost frontier, '
-                                'not minimum edit distance or minimum risk. Produce exactly three mechanism-diverse proposals. '
-                                'Ground claims in the supplied active configuration and training evidence, distinguish observation '
-                                'from inference, and permit ambitious exploratory hypotheses with explicit uncertainty. '
-                                'The all-training summary and representative failures/successes are supplied together. '
-                                'Observed error groups do not by themselves establish causal mechanisms. '
-                                'Explain enough for an independent reviewer to test each mechanism; '
-                                'there is no arbitrary 150-character field limit. Return valid JSON, no markdown.'},
-                                {'role':'user','content':serialized}],role='reflexion',json_mode=True,json_schema=REFLECTION_SCHEMA)
-    obj = json.loads(response['text'])
-    if not isinstance(obj,dict) or not isinstance(obj.get('clusters'),list) or len(obj.get('proposals',[])) != 3:
-        raise ValueError('Reflexion must return clusters and exactly three proposals')
-    for proposal in obj['proposals']:
-        if not isinstance(proposal,dict) or not all(isinstance(proposal.get(k),str) for k in ['direction','hypothesis','prediction','risk']):
-            raise ValueError('Invalid proposal schema')
-    for cluster in obj['clusters']:
-        if not isinstance(cluster,dict) or not isinstance(cluster.get('case_ids'),list) or \
-                cluster.get('uncertainty') not in ('low','medium','high') or \
-                not all(isinstance(cluster.get(k),str) for k in ('label','attribution')):
-            raise ValueError('Invalid cluster schema')
-        if cluster['attribution'].strip().lower() in ('low','medium','high'):
-            raise ValueError('Cluster attribution needs an explanation, not only a confidence level')
-    actual_ids = {e['query_id'] for e in prompt['examples']}
-    labels = {c['label'] for c in obj['clusters']}
-    for cluster in obj['clusters']:
-        if not set(cluster['case_ids']).issubset(actual_ids):
-            raise ValueError('Cluster cites a case absent from actual training input')
-    for proposal in obj['proposals']:
-        if proposal.get('basis') not in ('training_cases','parent_code','exploratory') or \
-                not all(isinstance(proposal.get(k),str) and proposal[k].strip()
-                        for k in ('rationale','mechanism','falsification_test')) or \
-                proposal.get('uncertainty') not in ('low','medium','high') or \
-                not isinstance(proposal.get('supporting_case_ids'),list) or \
-                not isinstance(proposal.get('supporting_cluster_labels'),list):
-            raise ValueError('Proposal needs an auditable rationale, basis, links and uncertainty')
-        if not set(proposal['supporting_case_ids']).issubset(actual_ids) or \
-                not set(proposal['supporting_cluster_labels']).issubset(labels):
-            raise ValueError('Proposal cites evidence absent from its actual reflection input')
-        if proposal['basis']=='training_cases' and not proposal['supporting_case_ids']:
-            raise ValueError('Training-case motivation needs at least one supplied case')
-    obj['call'] = {k: response[k] for k in ['usage','latency_s','role']}
-    obj['input_chars'] = len(serialized)
+    system = ('You design and diagnose memory-management policies offline. The answering agent is frozen. '
+              'Treat supplied examples and measurements as the full evidence; distinguish observations from hypotheses. '
+              'Observed error groups do not establish causes. Do not invent evidence or report causal truth as verified. '
+              'Return valid JSON only. Explain enough for an independent reviewer to test each mechanism; '
+              'there is no arbitrary field length limit.')
+    actual_ids = [e['query_id'] for e in prompt['examples']]
+    stage_records = {}
+    stage_input_chars = {}
+
+    def stage_messages(stage, extra=None):
+        stage_payload = dict(prompt)
+        stage_payload['stage'] = stage
+        if stage == 'diagnosis':
+            stage_payload['stage_instructions'] = (
+                'Report concrete observed failures in observed_failure. Keep causes in cause_hypotheses, '
+                'with supporting observations, counter-evidence, confidence and a discriminating test. '
+                'When attribution is unsupported, use attribution_status unresolved and an empty hypotheses list. '
+                'Never fill an explanation field with only low, medium, or high. Return only clusters.')
+        else:
+            stage_payload['stage_instructions'] = (
+                'Return exactly three mechanism-diverse proposals. Ground any training-case motivation in the '
+                'supplied examples and diagnosis. Code inspection or exploratory proposals may have empty case links. '
+                'Include an auditable rationale, mechanism, falsification test and uncertainty.')
+            if extra is not None:
+                stage_payload['diagnosis'] = extra
+        serialized_stage = json.dumps(stage_payload, ensure_ascii=False)
+        messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': serialized_stage}]
+        stage_input_chars[stage] = len(serialized_stage)
+        with trace_span('diagnostic-input' if stage == 'diagnosis' else 'proposal-input',
+                        input=stage_payload, metadata={'actual_model_input':True,
+                        'input_chars':len(serialized_stage), 'stage':stage,
+                        'diagnostic_example_count':len(examples), 'diagnostic_input_budget':None}) as span:
+            span.update(output={'selected_case_ids':actual_ids,'input_truncated':False})
+        return messages
+
+    diagnosis_obj = {'clusters': []}
+    if with_diagnosis:
+        def diagnosis_validator(value):
+            validate_diagnosis(value, actual_ids)
+        messages = stage_messages('diagnosis')
+        with trace_span('reflexion.diagnosis', input=messages,
+                        metadata={'role': 'reflexion', 'stage': 'diagnosis', 'evidence_scope': 'train_only'}) as span:
+            diagnosis_obj, diagnosis_record = call_validated_stage(
+                client, 'diagnosis', messages, DIAGNOSIS_SCHEMA, diagnosis_validator,
+                max_corrections=max_corrections, artifact_dir=artifact_dir)
+            stage_records['diagnosis'] = diagnosis_record
+            span.update(output=diagnosis_record)
+
+    cluster_labels = [cluster['label'] for cluster in diagnosis_obj['clusters']]
+    proposal_messages = stage_messages('proposals', diagnosis_obj)
+    with trace_span('reflexion.proposals', input=proposal_messages,
+                    metadata={'role': 'reflexion', 'stage': 'proposals', 'evidence_scope': 'train_only'}) as span:
+        proposal_obj, proposal_record = call_validated_stage(
+            client, 'proposals', proposal_messages, PROPOSAL_SCHEMA,
+            lambda value: validate_proposals(value, actual_ids, cluster_labels),
+            max_corrections=max_corrections, artifact_dir=artifact_dir)
+        stage_records['proposals'] = proposal_record
+        span.update(output=proposal_record)
+
+    obj = {'clusters': diagnosis_obj['clusters'], 'proposals': proposal_obj['proposals']}
+    usage = {}
+    latency_s = 0.0
+    for stage_record in stage_records.values():
+        for attempt in stage_record['attempts']:
+            for key, value in (attempt.get('usage') or {}).items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    usage[key] = usage.get(key, 0) + value
+            response = attempt.get('response')
+            if isinstance(response, dict) and isinstance(response.get('latency_s'), (int, float)):
+                latency_s += response['latency_s']
+    obj['call'] = {'usage': usage, 'latency_s': latency_s, 'role': 'reflexion'}
+    obj['stage_records'] = stage_records
+    obj['stage_input_chars'] = stage_input_chars
+    obj['input_chars'] = next(iter(stage_input_chars.values()))
+    obj['diagnosis_status'] = 'completed' if with_diagnosis else 'disabled'
     obj['diagnostic_example_count'] = len(prompt['examples'])
     obj['diagnostic_case_ids'] = [e['query_id'] for e in prompt['examples']]
-    obj['rationale_schema'] = 'evidence-v3'
+    obj['rationale_schema'] = 'evidence-v4-structured-diagnosis'
     obj['prompt_version'] = REFLECTION_PROMPT_VERSION
     obj['diagnostic_input_budget'] = None
     obj['diagnostic_input_truncated'] = False

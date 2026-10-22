@@ -325,3 +325,8 @@ Future scripts.langfuse_run imports automatically publish v2. This is still inde
 错误诊断区区分全训练可观测分组与模型抽样归因，只显示聚类标签、引用案例数、归因状态和关联候选；不导出患者原始 ID/病例正文。已通过 verification.json 的 v2 总览才开放候选、聚类的直接详情链接。患者 Sessions 链接仅能查看已导入的记录，不承诺当前运行已入库。底层原始轨迹保留；实时总览刷新不等于 Langfuse 实时采集。
 
 新增 deploy/langfuse/research_dashboard.py 与 tests/test_research_dashboard.py。11 项定向测试通过，页面实际浏览器渲染及轮次切换验证通过；HTTP overview=200，登录=303 到 /overview。辅助服务已重启，数据库/模型服务/Slurm 作业均未重启。
+
+
+## 2026-10-22 连续搜索接入
+
+用户确认最多6候选、每次2个、最深3代，允许验证参与选择并作为开发集；实现后不启动GPU。新增 rsi.continuous 与 CLI --search-profile/--continuous/--resume-search；配置 deploy/evolution-search.json，Slurm仅 RSI_CONTINUOUS_SEARCH=1 显式启用。奖励固定 development validation E2E AVG，test封存；UCT未展开前沿每节点只展开一次，记录真实选择、原子检查点与防重复回传，部分回放保留后重跑。旧干预绑定BM25，连续模式明确禁用。中文总览支持血缘、开发集提示与每次展开诊断。详见 docs/CONTINUOUS-SEARCH.md。真实连续搜索未启动，153107不变。

@@ -1,0 +1,26 @@
+{
+  "version": "continuous-v1",
+  "mode": "opt_in_not_launched",
+  "cli_flags": [
+    "--evolve",
+    "--continuous",
+    "--max-candidates",
+    "6",
+    "--children-per-expansion",
+    "2",
+    "--max-depth",
+    "3",
+    "--search-c",
+    "1.414",
+    "--max-interventions",
+    "0"
+  ],
+  "reward": "development_validation_E2E_AVG",
+  "validation_role": "development",
+  "test_evaluated": false,
+  "candidate_budget_includes_invalid": true,
+  "max_active_hours": 0,
+  "active_time_limit_note": "disabled; candidate budget is enforced; optional soft time limit checked between expansions",
+  "interventions": "disabled_until_parent_policy_aware",
+  "resume": "--resume-search --output SAME_OUTPUT"
+}

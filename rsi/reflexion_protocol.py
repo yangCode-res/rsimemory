@@ -180,15 +180,15 @@ def validate_diagnosis(obj: Any, case_ids: Iterable[str]) -> None:
         raise ProtocolValidationError(issues)
 
 
-def validate_proposals(obj: Any, case_ids: Iterable[str], cluster_labels: Iterable[str]) -> None:
+def validate_proposals(obj: Any, case_ids: Iterable[str], cluster_labels: Iterable[str], count: int = 3) -> None:
     issues: list[str] = []
     actual_ids, actual_labels = set(case_ids), set(cluster_labels)
     if not isinstance(obj, dict):
         raise ProtocolValidationError(["root must be an object"])
     _unknown_fields(obj, {"proposals"}, "root", issues)
     proposals = obj.get("proposals")
-    if not isinstance(proposals, list) or len(proposals) != 3:
-        raise ProtocolValidationError(["proposals must contain exactly three items"])
+    if not isinstance(proposals, list) or len(proposals) != count:
+        raise ProtocolValidationError([f"proposals must contain exactly {count} items"])
     required_text = ("direction", "hypothesis", "prediction", "risk", "rationale", "mechanism",
                      "falsification_test")
     for pi, proposal in enumerate(proposals):

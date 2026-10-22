@@ -45,7 +45,7 @@ class FixtureClient:
                                       'mechanism':'synthetic interface-preserving implementation',
                                       'falsification_test':'fixture replay fails the expected interface or answer checks',
                                       'supporting_case_ids':[], 'supporting_cluster_labels':[],
-                                      'uncertainty':'high'} for i in range(3)]}
+                                      'uncertainty':'high'} for i in range(payload.get("proposal_count", 3))]}
         elif role == 'codegen':
             from .evolution import PARENT_CODE
             result={'code':PARENT_CODE}

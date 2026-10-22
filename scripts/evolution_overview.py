@@ -50,9 +50,9 @@ def search_state(tree, policy):
     c = tree.get('c', 1.414)
     result = {'availability': 'recorded_tree_snapshot', 'Q': node.get('Q'),
               'visits': visits, 'parent_visits': parent.get('visits'), 'c': c,
-              'reward': 'strict_train_AVG_only; Q includes descendant backpropagation',
+              'reward': tree.get('reward','strict_train_AVG_only') + '; Q includes descendant backpropagation',
               'formula': 'Q + c * sqrt(log(max(1, parent_visits)) / visits)',
-              'selected_next': None, 'selection_history': 'not_recorded',
+              'selected_next': None, 'selection_history': 'see_recorded_search_expansions' if tree.get('validation_role')=='development' else 'not_recorded',
               'uct_kind': 'derived_snapshot_not_historical_selection',
               'status': node.get('status')}
     if node.get('status') in ('invalid', 'runtime_failed'):
@@ -133,6 +133,7 @@ def build(run, imported, profile):
         result = {'policy': policy, 'parent_policy': parent, 'policy_commit': branch.get('commit'),
                   'selection_status': branch.get('status'),
                   'proposal_direction': proposal.get('direction'),
+                  'generation': branch.get('generation'), 'expansion': branch.get('expansion'),
                   'target_error_clusters': proposal.get('supporting_cluster_labels', []),
                   'search_state': search_state(tree, policy),
                   'diagnosis_observation_id': diagnosis_id,
@@ -141,7 +142,7 @@ def build(run, imported, profile):
                   'folds': {}}
         for fold in ('train', 'validation'):
             path = run / 'branches' / policy / fold / 'report.json'
-            parent_path = run / parent / fold / 'report.json'
+            parent_path = run / ('branches/' + parent if parent.startswith('candidate-') else parent) / fold / 'report.json'
             if path.exists():
                 report = json.loads(path.read_text())
                 baseline = json.loads(parent_path.read_text()) if parent_path.exists() else {}
@@ -246,7 +247,7 @@ def build(run, imported, profile):
         'input': {'source_execution_url': source_root_url,
                   'framework_commit': root.get('metadata', {}).get('implementation_commit'),
                   'algorithm': tree.get('algorithm')},
-        'output': {'diagnostics': diagnostic_output, 'candidates': reviews, 'test_evaluated': summary.get('test_evaluated'),
+        'output': {'search': summary.get('search'), 'diagnostics': diagnostic_output, 'candidates': reviews, 'test_evaluated': summary.get('test_evaluated'),
                    'reading_order': 'proposal -> code -> train/validation -> type tradeoffs -> cost -> supporting cases',
                    'hypothesis_verdict': 'Requires controlled intervention; score changes alone do not prove mechanism.'},
         'metadata': metadata, 'status': 'ok', 'provenance': 'derived_from_recorded_artifacts',

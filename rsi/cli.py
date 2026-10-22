@@ -215,7 +215,36 @@ def main():
     p.add_argument('--resume-baselines-from')
     p.add_argument('--candidate-workers',type=int,choices=(1,2,3),default=1)
     p.add_argument('--candidate-base-urls',nargs='+')
+    p.add_argument('--search-profile',help='Explicitly opt into a versioned search configuration')
+    p.add_argument('--continuous',action='store_true',help='Bounded multi-generation UCT frontier search')
+    p.add_argument('--max-candidates',type=int,default=6)
+    p.add_argument('--children-per-expansion',type=int,default=2)
+    p.add_argument('--max-depth',type=int,default=3)
+    p.add_argument('--search-c',type=float,default=1.414)
+    p.add_argument('--search-max-hours',type=float,default=0.,help='Active-time soft limit checked between expansions; 0 disables it')
+    p.add_argument('--resume-search',action='store_true',help='Resume a continuous checkpoint with its frozen configuration')
     args=p.parse_args()
+    if args.search_profile and not args.resume_search:
+        profile=json.loads(Path(args.search_profile).read_text())
+        if profile.get('version')!='continuous-v1' or profile.get('reward')!='development_validation_E2E_AVG':
+            p.error('Unsupported search profile/objective')
+        args=p.parse_args(profile['cli_flags']+sys.argv[1:])
+    if args.resume_search:
+        existing=Path(args.output)/'config.json'
+        if not existing.exists(): p.error('Resume requires an existing config.json')
+        saved=json.loads(existing.read_text())
+        if not saved.get('continuous'): p.error('Only continuous searches can resume')
+        for action in p._actions:
+            if action.dest in saved and action.dest not in ('help','resume_search'):
+                setattr(args,action.dest,saved[action.dest])
+    if args.continuous:
+        if not args.evolve: p.error('--continuous requires --evolve')
+        if min(args.max_candidates,args.children_per_expansion,args.max_depth)<=0: p.error('Search budgets must be positive')
+        if not 1<=args.children_per_expansion<=3: p.error('Use 1 to 3 children per expansion')
+        if not math.isfinite(args.search_c) or args.search_c<0: p.error('Invalid exploration coefficient')
+        if not math.isfinite(args.search_max_hours) or args.search_max_hours<0: p.error('Invalid active-time limit')
+        if args.max_interventions: args.max_interventions=0  # Not yet parent-policy aware; explicitly recorded below.
+
     if args.candidate_base_urls and len(args.candidate_base_urls)!=args.candidate_workers:
         p.error('Provide exactly one candidate endpoint per worker')
     if args.candidate_workers>1 and not args.candidate_base_urls:
@@ -237,13 +266,19 @@ def main():
         p.error('Optimizer timeout must be finite and positive')
     signal.signal(signal.SIGTERM, _interrupt_replay)
     out=Path(args.output)
-    if out.exists(): p.error('Use a new output directory; never overwrite runs')
+    if out.exists() and not args.resume_search: p.error('Use a new output directory; never overwrite runs')
     if not args.fixture and not args.dataset: p.error('--dataset is required')
     config={'contract_version':'v0.3','interface_version':'v0.3','state_serializer':'cloudpickle-base64-v1','chunk_chars':1200,'chunk_overlap':120,'top_k':5,'max_steps':4,'context_chars':16000,
             'mode':'Efficient','seed':20261013,'split_version':SPLIT_VERSION,
             'split_fractions':{'train':.4,'validation':.2,'test':.4},'language':args.language,
             'fixture':args.fixture,'model':args.model,'judge_model':args.judge_model or args.model,
             'speculation':'disabled','policy_auxiliary_model':'disabled',**vars(args)}
+    if args.continuous:
+        config['continuous_search']={'version':'continuous-v1','max_candidates':args.max_candidates,
+            'children_per_expansion':args.children_per_expansion,'max_depth':args.max_depth,
+            'reward':'development_validation_E2E_AVG','validation_role':'development',
+            'exploration_c':args.search_c,'expansion_policy':'unexpanded_frontier_once',
+            'max_active_hours':args.search_max_hours,'interventions':'disabled_until_parent_aware'}
     config['judge_model']=args.judge_model or args.model
     config['evaluation_metric_version']='strict-plus-e2e-v1'
     config['actor_max_tokens']=1024
@@ -277,6 +312,8 @@ def main():
         config['implementation_dirty']=bool(subprocess.check_output(['git','-C',str(repo),'status','--porcelain']).strip())
     except subprocess.CalledProcessError:
         config['implementation_commit']=None;config['implementation_dirty']=True
+    if args.resume_search:
+        config['parent_source_sha256']=saved['parent_source_sha256']
     if args.dataset:
         manifest=Path(args.dataset)/'download_manifest.json'
         config['data_revision']=json.loads(manifest.read_text()).get('revision') if manifest.exists() else 'unverified'
@@ -296,7 +333,7 @@ def main():
     # Diagnostic subset keeps test sealed and stays within each original split.
     run_ids={k:v[:args.patients_per_split] if args.patients_per_split else v for k,v in split.items() if k!='test'}
     run_queries={k:representative_queries(queries,v,args.checkpoint,args.per_type) for k,v in run_ids.items()}
-    out.mkdir(parents=True)
+    out.mkdir(parents=True,exist_ok=args.resume_search)
     with trace_run(out/'traces.jsonl', run_id=(out.parent.name if out.name == 'result' else out.name),
                    metadata={'implementation_commit':config['implementation_commit'],
                              'contract_version':config['contract_version'], 'fixture':args.fixture,
@@ -307,6 +344,8 @@ def main():
         try:
             summary=_run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer)
         except BaseException as exc:
+            if args.resume_search and isinstance(exc,(ValueError,RuntimeError)):
+                raise  # Refused resume must not overwrite the existing search status.
             summary=_record_round_failure(out,exc,optimizer)
             round_span.update(output=summary,metadata={'trace_write_failures':write_failure_count()})
             raise
@@ -314,6 +353,9 @@ def main():
 
 
 def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer):
+    if args.continuous and args.resume_search:
+        from .continuous import run as continuous_run
+        return continuous_run(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer)
     _set_stage(out,'baseline.verification' if args.resume_baselines_from else 'baseline.train')
     root_code=baseline_source()
     parent_manifest=source_manifest(root_code, config['language'])
@@ -363,6 +405,10 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
     dump(out/'tree.json',tree)
     dump(out/'summary.json',{'status':'running','comparison':comparisons,'branches':[],
                             'baseline_reuse':reused,'test_evaluated':False})
+    if args.continuous:
+        from .continuous import run as continuous_run
+        return continuous_run(args,out,config,split,run_ids,run_queries,sessions,actor_client,judge_client,optimizer,
+            initial=(root_code,root_commit,train,validation,comparisons,semantic,reused))
     lookup={q['query_id']:q for q in run_queries['train']}
     branches=[];seen_code={};candidate_jobs=[]
     if args.evolve:

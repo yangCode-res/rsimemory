@@ -15,16 +15,16 @@ REFLECTION_PROMPT_VERSION = 'explore-v4-structured-reflexion'
 
 
 def reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True,
-            policy_context=None, diagnostics=None, max_corrections=1, artifact_dir=None):
+            policy_context=None, diagnostics=None, max_corrections=1, artifact_dir=None, proposal_count=3):
     with trace_span('reflexion', metadata={'role':'reflexion', 'evidence_scope':'train_only'}) as observation:
         result = _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis,
-                          policy_context, diagnostics, max_corrections, artifact_dir)
+                          policy_context, diagnostics, max_corrections, artifact_dir, proposal_count)
         observation.update(output=result)
         return result
 
 
 def _reflect(client, answers, query_lookup, interventions, parent_code, with_diagnosis=True,
-             policy_context=None, diagnostics=None, max_corrections=1, artifact_dir=None):
+             policy_context=None, diagnostics=None, max_corrections=1, artifact_dir=None, proposal_count=3):
     bundle = ((diagnostics if diagnostics is not None else
                build_training_diagnostics(answers, query_lookup)) if with_diagnosis else None)
     examples = bundle['examples'] if bundle else []
@@ -32,7 +32,7 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
     if not with_diagnosis:
         context.pop('parent_train_metrics',None)
     prompt = {'task': 'Improve memory-policy AVG across all task families under measured costs; answering system is frozen.',
-              'prompt_version':REFLECTION_PROMPT_VERSION,
+              'prompt_version':REFLECTION_PROMPT_VERSION, 'proposal_count':proposal_count,
               'parent_code': parent_code, 'parent_context':context, 'examples': examples,
               'training_diagnostics':bundle['summary'] if bundle else None,
               'diagnostic_selection':bundle['selection'] if bundle else None,
@@ -95,7 +95,7 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
                 'Never fill an explanation field with only low, medium, or high. Return only clusters.')
         else:
             stage_payload['stage_instructions'] = (
-                'Return exactly three mechanism-diverse proposals. Ground any training-case motivation in the '
+                f'Return exactly {proposal_count} mechanism-diverse proposals. Ground any training-case motivation in the '
                 'supplied examples and diagnosis. Code inspection or exploratory proposals may have empty case links. '
                 'Include an auditable rationale, mechanism, falsification test and uncertainty.')
             if extra is not None:
@@ -127,9 +127,11 @@ def _reflect(client, answers, query_lookup, interventions, parent_code, with_dia
     proposal_messages = stage_messages('proposals', diagnosis_obj)
     with trace_span('reflexion.proposals', input=proposal_messages,
                     metadata={'role': 'reflexion', 'stage': 'proposals', 'evidence_scope': 'train_only'}) as span:
+        proposal_schema = copy.deepcopy(PROPOSAL_SCHEMA)
+        proposal_schema['properties']['proposals'].update(minItems=proposal_count, maxItems=proposal_count)
         proposal_obj, proposal_record = call_validated_stage(
-            client, 'proposals', proposal_messages, PROPOSAL_SCHEMA,
-            lambda value: validate_proposals(value, actual_ids, cluster_labels),
+            client, 'proposals', proposal_messages, proposal_schema,
+            lambda value: validate_proposals(value, actual_ids, cluster_labels, proposal_count),
             max_corrections=max_corrections, artifact_dir=artifact_dir)
         stage_records['proposals'] = proposal_record
         span.update(output=proposal_record)

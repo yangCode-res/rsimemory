@@ -7,5 +7,11 @@
   "patient_grouping": {
     "enabled": true,
     "version": "patient-view-v1"
+  },
+  "review_entry": {
+    "default_path": "/overview",
+    "refresh_seconds": 30,
+    "source": "archived_reports",
+    "exclude_fixtures": true
   }
 }

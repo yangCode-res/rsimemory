@@ -133,3 +133,14 @@ UCT is calculated from the recorded tree using the executor formula, not a histo
 151576 v2 published as trace 65e077747ce5676001d4efca41f7e20b: 8 observations, 40 scores, server-side verification=true with zero missing/duplicate/field mismatches. Existing v1 and original execution records retained. The overview reads compressed derived traces left by log cleanup. Restore other compressed import payloads before reusing tools that require uncompressed filenames.
 
 Future scripts.langfuse_run imports automatically publish v2. This is still independent import, not live synchronization. Running 153107 is unchanged and has not been presented as a completed or imported v2 run. Nine overview tests pass, covering numerical UCT parity, null/infinite states, cluster evidence links, sampling boundaries and compressed input.
+
+
+## 2026-10-22 分层实验观测入口
+
+默认实验入口改为 http://localhost:3001/overview；http://localhost:3001/ 仍先自动登录，再跳转总览。由现有 loopback 辅助服务提供，只读取 runs 的配置、summary、progress、reports、tree 和诊断摘要，不改 Langfuse 上游源码或数据库结构。配置记录于 observability.json 的 review_entry。
+
+总览默认选最新有报告的正式运行，排除 fixture，每 30 秒读取归档快照。首屏为状态、候选数、当前验证最高值（包含固定基线，注明单次结果）、已核验总览导入状态。主表按策略展示提议方向、父版本、训练/验证 E2E 与严格 AVG、异常率、相对父策略百分点差、Q/N/UCT。题型变化、模型预测/风险和成本折叠。复用基线明确提示，未有报告用进度替代且不填零。
+
+错误诊断区区分全训练可观测分组与模型抽样归因，只显示聚类标签、引用案例数、归因状态和关联候选；不导出患者原始 ID/病例正文。已通过 verification.json 的 v2 总览才开放候选、聚类的直接详情链接。患者 Sessions 链接仅能查看已导入的记录，不承诺当前运行已入库。底层原始轨迹保留；实时总览刷新不等于 Langfuse 实时采集。
+
+新增 deploy/langfuse/research_dashboard.py 与 tests/test_research_dashboard.py。11 项定向测试通过，页面实际浏览器渲染及轮次切换验证通过；HTTP overview=200，登录=303 到 /overview。辅助服务已重启，数据库/模型服务/Slurm 作业均未重启。

@@ -64,3 +64,5 @@
 2026-10-22 并行执行更新：全量 Slurm 默认申请 6 GPU、48 CPU、256 GiB，启动三个独立 TP=2 SGLang 副本；按 Slurm CUDA_VISIBLE_DEVICES 的实际分配拆分双卡，端口7862/7863/7864，缓存、日志、健康监控各自独立。离线诊断和三个代码生成保持顺序依赖；准备完候选后，三个候选各绑定一个副本并行执行 train→validation。每个候选仍从空记忆完整回放，actor/judge 参数、题目、评分、UCT/Pareto 不变，test继续封存。主线程按提案顺序合并树与收益，轨迹上下文及模型客户端独立。详见 docs/PARALLEL-EXECUTION.md。
 
 六卡并行实现版本55ecef4baa084280664f16bd6551946ee7ff0c4e。新作业153107已在gpu22运行，Slurm确认6GPU/48CPU/256GiB，当前处于启动阶段；回执runs/rerun-launch-153107.json，归档runs/full-v03-local-153107。未宣称副本已就绪、候选已开始或吞吐已提升。
+
+2026-10-22 输出预算与默认接入更新：所有新任务默认读取 configs/llm-roles.yaml（可用 RSI_LLM_CONFIG / --llm-config 选路径），配置缺失或非法即失败。actor=4096、judge=1024、diagnosis/proposals/codegen max_tokens=null；null不发送max_tokens，已核验本地SGLang会按剩余物理上下文限制生成，不回退小默认预算。正常EOS及超时仍生效。CLI、全量Slurm、smoke及新连续搜索均接入，保存YAML快照和生效参数。历史运行保持只读；actor预算变化要求新基线，不能直接复用旧1024预算分数。详见docs/LLM-ROLES.md和聚合用量JSON。

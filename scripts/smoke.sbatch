@@ -12,6 +12,8 @@ set -euo pipefail
 ROOT=/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi
 SGL=/file_storage01/home/juanliu/25_ymj/code/sglang-qwen38
 cd "$ROOT"
+LLM_CONFIG=${RSI_LLM_CONFIG:-$ROOT/configs/llm-roles.yaml}
+[[ -r "$LLM_CONFIG" ]] || { echo LLM_CONFIG_MISSING; exit 1; }
 PY="$SGL/venv/bin/python"
 [[ ! -x "$ROOT/.venv/bin/python" ]] || PY="$ROOT/.venv/bin/python"
 export PORT=7861 HOST=127.0.0.1 TP_SIZE=2
@@ -30,5 +32,6 @@ SEMANTIC=()
 export TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS=8
 "$PY" -m rsi.cli --dataset /file_storage01/home/juanliu/25_ymj/code/MedMemoryBench \
   --output "$ROOT/runs/live-v02-$SLURM_JOB_ID" --base-url http://127.0.0.1:7861/v1 \
+  --llm-config "$LLM_CONFIG" \
   --checkpoint 20 --patients-per-split 1 --per-type 1 --evolve "${SEMANTIC[@]}"
 echo LIVE_PIPELINE_FINISHED

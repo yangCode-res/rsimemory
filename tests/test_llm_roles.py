@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from rsi.llm_roles import resolve, RoutedClient
+from rsi.llm_roles import DEFAULT_CONFIG_PATH, install, resolve, RoutedClient
 
 
 class RoleConfigTests(unittest.TestCase):
@@ -29,9 +29,24 @@ class RoleConfigTests(unittest.TestCase):
         self.assertEqual(r['codegen']['temperature'],.4)
         self.assertIsNone(r['actor']['base_url'])
 
+    def test_default_yaml_uses_historical_caps_and_provider_context_for_optimizer(self):
+        result=resolve(DEFAULT_CONFIG_PATH,self.config)['resolved']
+        self.assertEqual(result['actor']['max_tokens'],4096)
+        self.assertEqual(result['judge']['max_tokens'],1024)
+        for role in ('diagnosis','proposals','codegen'):
+            with self.subTest(role=role):self.assertIsNone(result[role]['max_tokens'])
+
+    def test_install_syncs_legacy_actor_and_judge_caps(self):
+        config={**self.config,'judge_max_tokens':512}
+        self.write('roles:\n  actor:\n    max_tokens: 4096\n  judge:\n    max_tokens: 1024\n')
+        profile=install(config,self.path)
+        self.assertEqual(config['actor_max_tokens'],profile['resolved']['actor']['max_tokens'])
+        self.assertEqual(config['judge_max_tokens'],profile['resolved']['judge']['max_tokens'])
+
     def test_invalid_fields_values_and_credentials(self):
         for text in ['roles:\n  typo: {}\n','defaults:\n  api_key: secret\n',
                      'defaults:\n  temperature: .nan\n','defaults:\n  max_tokens: false\n',
+                     'defaults:\n  max_tokens: 0\n','defaults:\n  max_tokens: -1\n',
                      'defaults:\n  base_url: https://user:password@example.com/v1\n',
                      'defaults:\n  model: first\n  model: second\n']:
             with self.subTest(text=text),self.assertRaises(ValueError):self.write(text)
@@ -59,6 +74,27 @@ class RoleConfigTests(unittest.TestCase):
         self.assertEqual(requests[1][2],'Bearer test-key-must-stay-private')
         self.assertEqual(len(client.calls),3)
         self.assertNotIn('test-key-must-stay-private',json.dumps(profile)+json.dumps(client.calls))
+
+    def test_null_override_omits_http_field(self):
+        profile=self.write('roles:\n  proposals:\n    max_tokens: null\n')
+        requests=[]
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def read(self,*args):return json.dumps({'choices':[{'message':{'content':'ok'},'finish_reason':'stop'}]}).encode()
+        def serve(request,**kwargs):
+            requests.append(json.loads(request.data));return Response()
+        with patch('urllib.request.urlopen',side_effect=serve):
+            client=RoutedClient({**self.config,'llm_roles':profile},'http://localhost/v1')
+            client.complete([{'role':'user','content':'x'}],role='proposals')
+        self.assertNotIn('max_tokens',requests[0])
+
+    def test_yaml_null_is_only_allowed_for_max_tokens(self):
+        resolved=self.write('defaults:\n  max_tokens: null\nroles: {}\n')
+        self.assertIsNone(resolved['resolved']['actor']['max_tokens'])
+        for key in ('temperature','timeout_s'):
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                self.write(f'defaults:\n  {key}: null\n')
 
     def test_yaml_change_changes_recorded_fingerprint(self):
         first=self.write('roles: {}\n')

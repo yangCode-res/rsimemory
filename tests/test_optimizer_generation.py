@@ -44,23 +44,28 @@ class OptimizerGeneration(unittest.TestCase):
         self.assertEqual(caught.exception.category,'generation_truncated')
         self.assertEqual(client.calls[-1]['usage']['completion_tokens'],16384)
 
-    def test_cli_wires_separate_optimizer_settings_and_persists_custom_values(self):
+    def test_cli_keeps_legacy_optimizer_flags_as_fallback_under_default_yaml(self):
         with tempfile.TemporaryDirectory() as temp:
             out = Path(temp)/'run'
             argv = ['rsi','--dataset',str(Path(temp)/'synthetic-data'),'--output',str(out),
                     '--codegen-max-tokens','12000','--reflexion-temperature','0.8']
             with patch.object(sys,'argv',argv), patch('rsi.cli.load_medmemory',return_value=dataset()), \
-                    patch('rsi.cli.ModelClient',side_effect=[FixtureClient(),FixtureClient(),FixtureClient()]) as factory, \
+                    patch('rsi.llm_roles.ModelClient',side_effect=lambda *a,**kw: FixtureClient()), \
                     contextlib.redirect_stdout(io.StringIO()):
                 main()
             config = json.loads((out/'config.json').read_text())
             self.assertEqual(config['optimizer_generation_settings']['codegen']['max_tokens'],12000)
             self.assertEqual(config['optimizer_generation_settings']['reflexion']['temperature'],.8)
-            self.assertEqual(config['actor_max_tokens'],1024)
-            self.assertEqual(factory.call_args_list[0].kwargs,{'max_tokens':1024})
-            self.assertEqual(factory.call_args_list[1].kwargs,{'max_tokens':1024})
-            self.assertEqual(factory.call_args_list[2].kwargs['role_settings'],
-                             config['optimizer_generation_settings'])
+            self.assertEqual(config['actor_max_tokens'],4096)
+            self.assertEqual(config['judge_max_tokens'],1024)
+            effective=config['effective_generation_settings']
+            self.assertEqual(effective['actor']['max_tokens'],4096)
+            self.assertEqual(effective['judge']['max_tokens'],1024)
+            self.assertEqual(effective['diagnosis']['max_tokens'],None)
+            self.assertEqual(effective['proposals']['max_tokens'],None)
+            self.assertEqual(effective['codegen']['max_tokens'],None)
+            self.assertEqual(effective['diagnosis']['temperature'],.7)
+            self.assertEqual(effective['codegen']['temperature'],.4)
 
     def test_cli_classifies_truncated_codegen_separately_from_contract(self):
         with tempfile.TemporaryDirectory() as temp:

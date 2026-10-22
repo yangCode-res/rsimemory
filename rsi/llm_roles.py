@@ -11,6 +11,7 @@ from .model import ModelClient
 
 NODES = ('actor','judge','diagnosis','proposals','codegen')
 FIELDS = {'model','base_url','temperature','max_tokens','timeout_s','api_key_env'}
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / 'configs' / 'llm-roles.yaml'
 
 
 def _validate(values):
@@ -27,8 +28,8 @@ def _validate(values):
         if key=='api_key_env' and value is not None:
             if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',value):
                 raise ValueError('api_key_env must name an environment variable')
-        if key=='max_tokens' and (type(value) is not int or value<=0):
-            raise ValueError('max_tokens must be a positive integer')
+        if key=='max_tokens' and value is not None and (type(value) is not int or value<=0):
+            raise ValueError('max_tokens must be a positive integer or null')
         if key in ('temperature','timeout_s'):
             if type(value) not in (int,float) or not math.isfinite(value):
                 raise ValueError(key+' must be finite numeric')
@@ -78,6 +79,9 @@ def install(config,path):
     # Existing report labels must remain truthful for actor and judge.
     config['model']=profile['resolved']['actor']['model']
     config['judge_model']=profile['resolved']['judge']['model']
+    config['actor_max_tokens']=profile['resolved']['actor']['max_tokens']
+    if 'judge_max_tokens' in config:
+        config['judge_max_tokens']=profile['resolved']['judge']['max_tokens']
     return profile
 
 

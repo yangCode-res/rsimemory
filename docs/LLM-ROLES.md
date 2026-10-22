@@ -1,6 +1,6 @@
 # YAML 节点模型配置
 
-入口：configs/llm-roles.yaml。依赖 PyYAML（当前环境6.0.3；新环境需安装）。默认模板保持当前 Qwen3.8-27B 五节点配置。
+入口：configs/llm-roles.yaml。依赖 PyYAML（当前环境6.0.3；新环境需安装）。默认模板使用 Qwen3.8-27B 五节点配置。2026-10-22 起所有新 CLI/Slurm 任务默认读取该文件，输出预算按下文更新。
 
 ```yaml
 version: llm-roles-v1
@@ -11,7 +11,7 @@ defaults:
 roles:
   actor:
     temperature: 0
-    max_tokens: 1024
+    max_tokens: 4096
   judge:
     model: your-judge-served-model
     base_url: http://127.0.0.1:8001/v1
@@ -22,13 +22,13 @@ roles:
     model: your-diagnosis-served-model
     base_url: http://127.0.0.1:8002/v1
     temperature: 0.7
-    max_tokens: 8192
+    max_tokens: null
   proposals:
     temperature: 0.7
-    max_tokens: 8192
+    max_tokens: null
   codegen:
     temperature: 0.4
-    max_tokens: 16384
+    max_tokens: null
 ```
 
 此示例是配置格式，不代表示例服务已启动或模型已安装。model 是服务接受的模型ID，不是权重路径。base_url=null 表示继承当前分配的本地副本；显式URL则固定使用该角色服务，并行候选不会把它覆盖成本地副本。defaults 覆盖共同设置；roles 覆盖单节点；未指定的参数按当前CLI原配置继承。可配置字段为 model/base_url/api_key_env/temperature/max_tokens/timeout_s。
@@ -39,7 +39,7 @@ roles:
 
 ## 启用
 
-在原有执行参数上追加：`--llm-config configs/llm-roles.yaml`。可与 `--search-profile deploy/evolution-search.json` 同时使用。Slurm入口可显式设置 RSI_LLM_CONFIG 为所选YAML绝对路径。没有这个参数/环境变量时沿用原有逻辑，当前153107不变。
+CLI默认读取代码仓库中的 configs/llm-roles.yaml；RSI_LLM_CONFIG可指定其他路径，显式 --llm-config优先。配置缺失或非法直接失败，不回退旧逻辑。full_round.sbatch始终传入选定YAML的启动时快照，smoke.sbatch也始终传入YAML。可与 --search-profile deploy/evolution-search.json同时使用。历史153107及其他运行不改写。
 
 解析后的五节点配置、YAML源哈希与规范化配置哈希均进入运行config.json。实际生成trace继续记录服务返回模型名；路由父节点记录workflow_node、配置模型和服务地址，调用统计保留各节点归属。
 
@@ -48,3 +48,21 @@ roles:
 ## 验证
 
 完整回归216项（1跳过）通过；后补配置变更恢复拒绝测试后，节点配置5项定向测试通过。模拟HTTP请求核对actor/diagnosis/proposals实际URL、模型ID、输出预算与密钥不入归档；带YAML的合成连续任务fixture-yaml-roles-20261022运行及完成后恢复通过。没有真实外部API调用、模型部署或新GPU作业。
+
+## 输出预算：2026-10-22
+
+|节点|max_tokens|temperature|timeout_s|
+|---|---:|---:|---:|
+|actor|4096|0|180|
+|judge|1024|0|180|
+|diagnosis|null|0.7|900|
+|proposals|null|0.7|900|
+|codegen|null|0.4|900|
+
+null表示客户端不发送max_tokens字段，也不替换成1024、128或一个伪装成无限大的数。已核验当前安装SGLang：ChatCompletionRequest默认max_tokens=None，转换为sampling.max_new_tokens=None，调度器按剩余上下文裁定物理生成上限。因此当前本地服务没有额外应用层输出上限，正常EOS/JSON完成仍会结束生成。模型总上下文（当前262144）和请求超时仍存在。其他兼容服务可能有自己的缺省限制；切换服务要重新核验，不能把null称为物理无限输出。finish_reason=length仍明确归档为generation_truncated，不把部分代码当完整代码。
+
+历史151576/152743/153107中，actor输出p99约488–492，10次触及1024；提高到4096为长回答保留余量。judge三轮最大590、无长度截断，因此保留1024。153107诊断首次输出8192被截断；离线三个节点改为null，让内容决定实际长度。详细聚合证据见output-token-observations-20261022.json，统计不含病例内容。
+
+YAML是节点生效参数来源：显式角色字段覆盖defaults和旧CLI参数的继承值；历史--reflexion-max-tokens等仍作为未在YAML声明字段时的fallback。全量脚本不再重复传入旧的RSI_REFLEXION_MAX_TOKENS等生成预算变量。修改节点预算应编辑选中的YAML。config.llm_roles.resolved及effective_generation_settings记录实际参数，旧optimizer_generation_settings仅保留CLI输入fallback。
+
+每个新run保存llm-roles.yaml原始快照、源SHA和解析SHA。连续恢复要求所选YAML与冻结快照内容完全一致，路径可以改变（例如使用归档快照）；改预算应新开实验。没有冻结YAML的旧连续任务不能无声接入新默认配置。actor1024→4096属于回答器配置变化，旧基线不可直接复用；新预算实验必须重新建立同预算BM25/BGE基线。ReAct提示、工具/轮数、judge模型与温度、评分规则保持原样。

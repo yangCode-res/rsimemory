@@ -1,5 +1,6 @@
 # OpenAI-compatible /v1 endpoints; model is the server's served model ID.
 # null base_url inherits the assigned local replica; a URL pins that role to a service.
+# null max_tokens omits the request cap and lets provider context bound the output.
 version: llm-roles-v1
 defaults:
   model: qwen3.8-27b
@@ -8,7 +9,7 @@ defaults:
 roles:
   actor:
     temperature: 0
-    max_tokens: 1024
+    max_tokens: 4096
     timeout_s: 180
   judge:
     temperature: 0
@@ -16,13 +17,13 @@ roles:
     timeout_s: 180
   diagnosis:
     temperature: 0.7
-    max_tokens: 8192
+    max_tokens: null
     timeout_s: 900
   proposals:
     temperature: 0.7
-    max_tokens: 8192
+    max_tokens: null
     timeout_s: 900
   codegen:
     temperature: 0.4
-    max_tokens: 16384
+    max_tokens: null
     timeout_s: 900

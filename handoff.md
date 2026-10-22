@@ -340,3 +340,5 @@ Future scripts.langfuse_run imports automatically publish v2. This is still inde
 ## 2026-10-22 首次真实连续搜索153572
 
 用户授权启动。作业153572已提交并确认RUNNING，节点gpu22；执行提交a25958cdd075df08afc90b6222686a932982b99a。显式启用连续搜索与configs/llm-roles.yaml：6新候选、每次2个、深度3、c=1.414、开发集validation E2E AVG奖励，测试集封存。6GPU/3个TP2副本；因旧基线缺少YAML角色指纹，本次不复用基线，重新评测BM25/BGE。预检隔离/快照/中文检索通过。启动回执runs/rerun-launch-153572.json，归档runs/full-v03-local-153572。RUNNING只表示已调度，模型健康及具体阶段仍需检查；不代表候选已生成或进化有效。
+
+2026-10-22 输出预算与默认接入更新：所有新任务默认读取 configs/llm-roles.yaml（可用 RSI_LLM_CONFIG / --llm-config 选路径），配置缺失或非法即失败。actor=4096、judge=1024、diagnosis/proposals/codegen max_tokens=null；null不发送max_tokens，已核验本地SGLang会按剩余物理上下文限制生成，不回退小默认预算。正常EOS及超时仍生效。CLI、全量Slurm、smoke及新连续搜索均接入，保存YAML快照和生效参数。历史运行保持只读；actor预算变化要求新基线，不能直接复用旧1024预算分数。详见docs/LLM-ROLES.md和聚合用量JSON。

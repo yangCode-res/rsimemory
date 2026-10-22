@@ -79,6 +79,11 @@ git -C "$CODE" checkout --quiet --detach "$COMMIT"
 HELPER="$CODE/scripts/round_storage.py"
 git -C "$CODE" rev-parse HEAD > "$META/implementation-commit"
 cd "$CODE"
+# Freeze the selected role YAML before model startup. New tasks always use it.
+LLM_CONFIG_SOURCE=${RSI_LLM_CONFIG:-$CODE/configs/llm-roles.yaml}
+[[ -r "$LLM_CONFIG_SOURCE" ]] || { echo LLM_CONFIG_MISSING; exit 1; }
+cp "$LLM_CONFIG_SOURCE" "$META/llm-roles.yaml"
+printf '%s\n' "$LLM_CONFIG_SOURCE" > "$META/llm-config-source"
 export TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS=8 PYTHONUNBUFFERED=1
 export TMPDIR="$LOCAL/tmp" XDG_CACHE_HOME="$LOCAL/cache"
 export TORCHINDUCTOR_CACHE_DIR="$LOCAL/cache/torch" TRITON_CACHE_DIR="$LOCAL/cache/triton"
@@ -100,7 +105,7 @@ echo PREFLIGHT_OK
 COPY_PID=$!
 echo model_starting > "$META/status"
 # The diagnostic input is never clipped by the application. Use the model's
-# verified native context capacity; actor/judge request budgets stay frozen.
+# verified native context capacity; request budgets come from the frozen YAML.
 export CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 printf '%s\n' "$CONTEXT_LENGTH" > "$META/service-context-length"
 setsid "$PY" "$CODE/scripts/launch_sglang_replicas.py" \
@@ -122,10 +127,7 @@ if [[ -n "${RSI_RESUME_BASELINES_FROM:-}" ]]; then
   RESUME_ARGS=(--resume-baselines-from "$RSI_RESUME_BASELINES_FROM")
   printf '%s\n' "$RSI_RESUME_BASELINES_FROM" > "$META/baseline-resume-source"
 fi
-LLM_ARGS=()
-if [[ -n "${RSI_LLM_CONFIG:-}" ]]; then
-  LLM_ARGS=(--llm-config "$RSI_LLM_CONFIG")
-fi
+LLM_ARGS=(--llm-config "$META/llm-roles.yaml")
 SEARCH_ARGS=()
 if [[ "${RSI_CONTINUOUS_SEARCH:-0}" == 1 ]]; then
   SEARCH_ARGS=(--search-profile "$ROOT/deploy/evolution-search.json")
@@ -134,11 +136,6 @@ setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   --base-url http://127.0.0.1:7862/v1 \
   --candidate-base-urls http://127.0.0.1:7862/v1 http://127.0.0.1:7863/v1 http://127.0.0.1:7864/v1 \
   --candidate-workers 3 \
-  --reflexion-max-tokens "${RSI_REFLEXION_MAX_TOKENS:-8192}" \
-  --codegen-max-tokens "${RSI_CODEGEN_MAX_TOKENS:-16384}" \
-  --reflexion-temperature "${RSI_REFLEXION_TEMPERATURE:-0.7}" \
-  --codegen-temperature "${RSI_CODEGEN_TEMPERATURE:-0.4}" \
-  --optimizer-timeout-s "${RSI_OPTIMIZER_TIMEOUT_S:-900}" \
   --reflexion-max-corrections "${RSI_REFLEXION_MAX_CORRECTIONS:-1}" \
   "${RESUME_ARGS[@]}" "${SEARCH_ARGS[@]}" "${LLM_ARGS[@]}" \
   --semantic-model-path "$ROOT/models/bge-small-zh-v1.5" --evolve &

@@ -9,6 +9,7 @@ import time
 import hashlib
 import json
 import math
+import os
 import signal
 from pathlib import Path
 import subprocess
@@ -25,6 +26,7 @@ from .policy_source import baseline_source, source_manifest, SOURCE_VERSION
 from .runtime import replay, dump, intervention, call_cost
 from .tracing import trace_run, trace_span, write_failure_count
 from .resume import baseline_runtime_fingerprint, verify_baseline_resume, materialize_baseline_resume
+from .llm_roles import DEFAULT_CONFIG_PATH
 
 
 def commit_policy(repo, code, label, parent=None):
@@ -218,7 +220,8 @@ def main():
     p.add_argument('--resume-baselines-from')
     p.add_argument('--candidate-workers',type=int,choices=(1,2,3),default=1)
     p.add_argument('--candidate-base-urls',nargs='+')
-    p.add_argument('--llm-config',help='Versioned YAML workflow-node model configuration')
+    p.add_argument('--llm-config',default=os.getenv('RSI_LLM_CONFIG') or str(DEFAULT_CONFIG_PATH),
+                   help='Workflow-node YAML (default: repository config; RSI_LLM_CONFIG overrides path)')
     p.add_argument('--search-profile',help='Explicitly opt into a versioned search configuration')
     p.add_argument('--continuous',action='store_true',help='Bounded multi-generation UCT frontier search')
     p.add_argument('--max-candidates',type=int,default=6)
@@ -238,9 +241,14 @@ def main():
         if not existing.exists(): p.error('Resume requires an existing config.json')
         saved=json.loads(existing.read_text())
         if not saved.get('continuous'): p.error('Only continuous searches can resume')
+        if not saved.get('llm_roles'):
+            p.error('Checkpoint has no frozen YAML role configuration; start a new experiment')
         for action in p._actions:
-            if action.dest in saved and action.dest not in ('help','resume_search'):
+            if action.dest in saved and action.dest not in ('help','resume_search','llm_config'):
                 setattr(args,action.dest,saved[action.dest])
+    if not args.llm_config or not Path(args.llm_config).expanduser().is_file():
+        p.error('A readable LLM YAML is required; no legacy fallback is allowed')
+    args.llm_config=str(Path(args.llm_config).expanduser().resolve())
     if args.continuous:
         if not args.evolve: p.error('--continuous requires --evolve')
         if min(args.max_candidates,args.children_per_expansion,args.max_depth)<=0: p.error('Search budgets must be positive')
@@ -291,16 +299,27 @@ def main():
                      'timeout_s':args.optimizer_timeout_s},
         'codegen':{'max_tokens':args.codegen_max_tokens,'temperature':args.codegen_temperature,
                    'timeout_s':args.optimizer_timeout_s}}
-    if args.llm_config:
-        from .llm_roles import install
-        if args.resume_search and saved.get('llm_roles'):
+    from .llm_roles import install
+    try:
+        if args.resume_search:
             if hashlib.sha256(Path(args.llm_config).read_bytes()).hexdigest()!=saved['llm_roles']['source_sha256']:
                 p.error('LLM YAML changed; start a new experiment')
             config['llm_roles']=saved['llm_roles']
         else:
             install(config,args.llm_config)
-        config['llm_baseline_roles']={key:config['llm_roles']['resolved'][key] for key in ('actor','judge')}
-        config['llm_baseline_roles']['router_sha256']=hashlib.sha256((Path(__file__).parent/'llm_roles.py').read_bytes()).hexdigest()
+        llm_source_bytes=Path(args.llm_config).read_bytes()
+        if hashlib.sha256(llm_source_bytes).hexdigest()!=config['llm_roles']['source_sha256']:
+            p.error('LLM YAML changed while loading; retry with a stable configuration')
+    except (OSError,ValueError) as exc:
+        p.error(str(exc))
+    resolved=config['llm_roles']['resolved']
+    config['model']=resolved['actor']['model'];config['judge_model']=resolved['judge']['model']
+    config['actor_max_tokens']=resolved['actor']['max_tokens']
+    config['judge_max_tokens']=resolved['judge']['max_tokens']
+    config['effective_generation_settings']={role:{k:value[k] for k in
+        ('max_tokens','temperature','timeout_s')} for role,value in resolved.items()}
+    config['llm_baseline_roles']={key:resolved[key] for key in ('actor','judge')}
+    config['llm_baseline_roles']['router_sha256']=hashlib.sha256((Path(__file__).parent/'llm_roles.py').read_bytes()).hexdigest()
     config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v4-structured-diagnosis'
     config['reflexion_stages']=['proposals'] if args.no_diagnosis else ['diagnosis','proposals']
     config['baseline_runtime_sha256']=baseline_runtime_fingerprint()
@@ -338,22 +357,18 @@ def main():
         sessions,queries=fixture_dataset();actor_client=FixtureClient();judge_client=FixtureClient();optimizer=FixtureClient()
     else:
         sessions,queries=load_medmemory(args.dataset,args.language)
-        if config.get('llm_roles'):
-            from .llm_roles import RoutedClient
-            actor_client=RoutedClient(config,args.base_url)
-            judge_client=RoutedClient(config,args.base_url)
-            optimizer=RoutedClient(config,args.base_url)
-        else:
-            actor_client=ModelClient(args.base_url,args.model,max_tokens=1024)
-            judge_client=ModelClient(args.judge_url or args.base_url,args.judge_model or args.model,max_tokens=1024)
-            optimizer=ModelClient(args.base_url,args.model,
-                                  role_settings=config['optimizer_generation_settings'])
+        from .llm_roles import RoutedClient
+        actor_client=RoutedClient(config,args.base_url)
+        judge_client=RoutedClient(config,args.base_url)
+        optimizer=RoutedClient(config,args.base_url)
     split=patient_splits([s['persona_id'] for s in sessions],config['seed'])
     config['split_patient_counts']={k:len(v) for k,v in split.items()}
     # Diagnostic subset keeps test sealed and stays within each original split.
     run_ids={k:v[:args.patients_per_split] if args.patients_per_split else v for k,v in split.items() if k!='test'}
     run_queries={k:representative_queries(queries,v,args.checkpoint,args.per_type) for k,v in run_ids.items()}
     out.mkdir(parents=True,exist_ok=args.resume_search)
+    if not args.resume_search:
+        (out/'llm-roles.yaml').write_bytes(llm_source_bytes)
     with trace_run(out/'traces.jsonl', run_id=(out.parent.name if out.name == 'result' else out.name),
                    metadata={'implementation_commit':config['implementation_commit'],
                              'contract_version':config['contract_version'], 'fixture':args.fixture,

@@ -52,16 +52,24 @@ class ModelClient:
 
     def __init__(self, base_url: str = "http://127.0.0.1:7860/v1", model: str = "",
                  api_key: str | None = None, timeout_s: float = 180.0,
-                 temperature: float = 0.0, max_tokens: int = 1024,
+                 temperature: float = 0.0, max_tokens: int | None = 1024,
                  role_settings: dict[str, dict[str, Any]] | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key if api_key is not None else os.getenv("RSI_API_KEY")
         self.timeout_s = float(timeout_s)
         self.temperature = float(temperature)
-        self.max_tokens = int(max_tokens)
+        self.max_tokens = self._validate_max_tokens(max_tokens)
         self.role_settings = {role: dict(settings) for role, settings in (role_settings or {}).items()}
         self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _validate_max_tokens(value: Any) -> int | None:
+        if value is None:
+            return None
+        if type(value) is not int or value <= 0:
+            raise ValueError("max_tokens must be a positive integer or None")
+        return value
 
     def complete(self, messages: list[dict[str, str]], role: str = "actor",
                  json_mode: bool = False, json_schema: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -71,18 +79,24 @@ class ModelClient:
         if set(overrides) - set(settings):
             raise ValueError('Unknown per-role generation setting')
         settings.update(overrides)
+        settings['max_tokens'] = self._validate_max_tokens(settings['max_tokens'])
         with trace_span('llm.'+role, kind='generation', input={'messages': messages},
-                        metadata={'role': role, **settings}) as observation:
+                        metadata={'role': role, **settings,
+                                  **({'output_limit': 'provider_context'}
+                                     if settings['max_tokens'] is None else {})}) as observation:
             return self._complete(messages, role, json_mode, json_schema, observation, settings)
 
     def _complete(self, messages, role, json_mode, json_schema, observation, settings):
         body: dict[str, Any] = {
             "model": self.model,
             "temperature": settings['temperature'],
-            "max_tokens": settings['max_tokens'],
             "messages": messages,
             "chat_template_kwargs": {"enable_thinking": False},
         }
+        # Omitting max_tokens delegates the upper bound to the provider's
+        # remaining context window; it does not substitute a client-side cap.
+        if settings['max_tokens'] is not None:
+            body['max_tokens'] = settings['max_tokens']
         if json_schema is not None:
             body["response_format"] = {"type": "json_schema", "json_schema":
                                        {"name": role, "schema": json_schema, "strict": True}}

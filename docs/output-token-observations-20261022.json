@@ -1,0 +1,80 @@
+{
+  "scope": "aggregate_only_no_clinical_content",
+  "runs": {
+    "151576": {
+      "actor": {
+        "calls": 19031,
+        "p99": 492,
+        "max": 1024,
+        "finish_length": 3
+      },
+      "judge": {
+        "calls": 3362,
+        "p99": 182,
+        "max": 590,
+        "finish_length": 0
+      },
+      "reflexion": {
+        "calls": 1,
+        "max": 4087,
+        "finish_length": 0
+      },
+      "codegen": {
+        "calls": 3,
+        "max": 7443,
+        "finish_length": 0
+      }
+    },
+    "152743": {
+      "actor": {
+        "calls": 7576,
+        "p99": 488,
+        "max": 1024,
+        "finish_length": 2
+      },
+      "judge": {
+        "calls": 1345,
+        "p99": 180,
+        "max": 257,
+        "finish_length": 0
+      },
+      "reflexion": {
+        "calls": 1,
+        "max": 2702,
+        "finish_length": 0
+      }
+    },
+    "153107": {
+      "actor": {
+        "calls": 11474,
+        "p99": 488,
+        "max": 1024,
+        "finish_length": 5
+      },
+      "judge": {
+        "calls": 2015,
+        "p99": 191,
+        "max": 257,
+        "finish_length": 0
+      },
+      "reflexion": {
+        "calls": 3,
+        "max": 8192,
+        "finish_length": 1
+      },
+      "codegen": {
+        "calls": 3,
+        "max": 3806,
+        "finish_length": 0
+      }
+    }
+  },
+  "decision": {
+    "actor": 4096,
+    "judge": 1024,
+    "diagnosis": null,
+    "proposals": null,
+    "codegen": null
+  },
+  "unbounded_semantics": "omit max_tokens; SGLang clips to remaining context; EOS and request timeout remain"
+}

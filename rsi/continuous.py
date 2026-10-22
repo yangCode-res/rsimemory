@@ -27,7 +27,9 @@ def atomic(path, value):
 
 def fingerprint(config, split, run_queries, sessions=None):
     # Check actual selected questions as well as the declared data revision.
-    excluded = {'resume_search', 'implementation_dirty', 'implementation_commit'}
+    # YAML contents/resolved values are frozen below; its location may move
+    # between checkouts or be supplied from the archived run snapshot.
+    excluded = {'resume_search', 'implementation_dirty', 'implementation_commit','llm_config'}
     return hashlib.sha256(json.dumps({
         'config': {k:v for k,v in config.items() if k not in excluded},
         'split':split, 'queries':run_queries, 'sessions':sessions,

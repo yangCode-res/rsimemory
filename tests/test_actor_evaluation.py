@@ -13,8 +13,10 @@ class FakeClient:
         self.responses = list(responses)
         self.roles = []
         self.message_calls = []
+        self.schemas = []
 
-    def complete(self, messages, role="actor", json_mode=False):
+    def complete(self, messages, role="actor", json_mode=False, json_schema=None):
+        self.schemas.append(json_schema)
         self.roles.append((role, json_mode))
         self.message_calls.append(list(messages))
         item = self.responses.pop(0)
@@ -77,7 +79,7 @@ class ActorEvaluationTests(unittest.TestCase):
     def test_step_exhaustion_uses_marked_forced_final(self):
         client = FakeClient([
             {"action": "search", "query": "medication", "filters": {}},
-            {"action": "final", "answer": "The evidence is insufficient."},
+            {"answer": "The evidence is insufficient."},
         ])
         result = Actor(client, max_steps=1).answer("Question", ReadOnlyTools())
         self.assertEqual(result["status"], "forced_final")
@@ -86,6 +88,32 @@ class ActorEvaluationTests(unittest.TestCase):
         system_positions = [i for i, message in enumerate(final_messages)
                             if message["role"] == "system"]
         self.assertEqual(system_positions, [0])
+        self.assertEqual(client.schemas[-1]['required'],['answer'])
+        self.assertFalse(client.schemas[-1]['additionalProperties'])
+        self.assertNotIn('exactly one action',final_messages[0]['content'])
+        self.assertEqual(result['trajectory'][-1]['normalized_action'],'final')
+
+    def test_final_schema_violations_do_not_execute_tools_or_invent_answer(self):
+        for invalid in [{'action':'search','query':'again','filters':{}},
+                        {'action':'read','ids':['m1']}, {'answer':''}, {'answer':'   '},
+                        {'answer':42}, {'action':'final','answer':'text'}]:
+            with self.subTest(invalid=invalid):
+                client=FakeClient([{'action':'search','query':'initial','filters':{}},invalid])
+                tools=ReadOnlyTools()
+                result=Actor(client,max_steps=1).answer('Question',tools)
+                self.assertEqual(result['status'],'forced_final_invalid')
+                self.assertEqual(result['answer'],'')
+                self.assertEqual(len(tools.calls),1)
+                self.assertEqual(result['cost']['calls'],2)
+
+    def test_truncated_final_stays_failed_without_extra_calls(self):
+        from rsi.model import ModelOutputTruncated
+        client=FakeClient([{'action':'search','query':'initial','filters':{}},
+                           ModelOutputTruncated('synthetic truncation')])
+        result=Actor(client,max_steps=1).answer('Question',ReadOnlyTools())
+        self.assertEqual(result['status'],'forced_final_failed')
+        self.assertEqual(result['answer'],'')
+        self.assertEqual(result['cost']['calls'],2)
 
     def test_invalid_judge_output_is_null_and_cost_is_logged(self):
         client = FakeClient(['{"score":true,"reason":"invalid boolean"}'])

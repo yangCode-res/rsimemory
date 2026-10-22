@@ -17,7 +17,7 @@ RUNTIME_FILES = ("actor.py", "evaluation.py", "data.py", "policy.py", "model.py"
                  "runtime.py", "policy_source.py")
 FOLDS = ("train", "validation")
 FROZEN_FIELDS = (
-    "llm_baseline_roles", "contract_version", "interface_version", "state_serializer", "language", "mode",
+    "actor_protocol_version", "llm_baseline_roles", "contract_version", "interface_version", "state_serializer", "language", "mode",
     "seed", "split_seed", "split_version", "split_fractions", "split_patients",
     "fixture", "model", "actor_model", "judge_model", "judge_rubric",
     "evaluation_metric_version", "metric_version", "actor_max_tokens", "max_steps",

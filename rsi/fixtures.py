@@ -22,6 +22,11 @@ class FixtureClient:
     def complete(self,messages,role='actor',json_mode=False,json_schema=None):
         if role == 'actor':
             question=messages[1]['content']
+            if json_schema and set(json_schema.get('properties',{})) == {'answer'}:
+                result={'answer':'A' if 'option' in question else 'ALPHA'}
+                call={'text':json.dumps(result),'usage':{},'latency_s':0.,'role':role}
+                self.calls.append(call)
+                return call
             if not any(m['content'].startswith('search result:') for m in messages):
                 result={'action':'search','query':question,'filters':{}}
             else: result={'action':'final','answer':'A' if 'option' in question else 'ALPHA'}

@@ -293,6 +293,8 @@ def main():
             'max_active_hours':args.search_max_hours,'interventions':'disabled_until_parent_aware'}
     config['judge_model']=args.judge_model or args.model
     config['evaluation_metric_version']='strict-plus-e2e-v1'
+    from .actor import ACTOR_PROTOCOL_VERSION
+    config['actor_protocol_version']=ACTOR_PROTOCOL_VERSION
     config['actor_max_tokens']=1024
     config['optimizer_generation_settings']={
         'reflexion':{'max_tokens':args.reflexion_max_tokens,'temperature':args.reflexion_temperature,

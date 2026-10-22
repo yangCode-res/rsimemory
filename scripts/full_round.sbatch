@@ -122,6 +122,10 @@ if [[ -n "${RSI_RESUME_BASELINES_FROM:-}" ]]; then
   RESUME_ARGS=(--resume-baselines-from "$RSI_RESUME_BASELINES_FROM")
   printf '%s\n' "$RSI_RESUME_BASELINES_FROM" > "$META/baseline-resume-source"
 fi
+LLM_ARGS=()
+if [[ -n "${RSI_LLM_CONFIG:-}" ]]; then
+  LLM_ARGS=(--llm-config "$RSI_LLM_CONFIG")
+fi
 SEARCH_ARGS=()
 if [[ "${RSI_CONTINUOUS_SEARCH:-0}" == 1 ]]; then
   SEARCH_ARGS=(--search-profile "$ROOT/deploy/evolution-search.json")
@@ -136,7 +140,7 @@ setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   --codegen-temperature "${RSI_CODEGEN_TEMPERATURE:-0.4}" \
   --optimizer-timeout-s "${RSI_OPTIMIZER_TIMEOUT_S:-900}" \
   --reflexion-max-corrections "${RSI_REFLEXION_MAX_CORRECTIONS:-1}" \
-  "${RESUME_ARGS[@]}" "${SEARCH_ARGS[@]}" \
+  "${RESUME_ARGS[@]}" "${SEARCH_ARGS[@]}" "${LLM_ARGS[@]}" \
   --semantic-model-path "$ROOT/models/bge-small-zh-v1.5" --evolve &
 CLI_PID=$!
 while IFS=$'\t' read -r server_pid health_url service_meta; do

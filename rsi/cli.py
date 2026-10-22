@@ -107,6 +107,9 @@ def _candidate_clients(args, config, endpoint, actor_client, judge_client, cance
         actor,judge=actor_client,judge_client
     elif args.fixture:
         actor,judge=FixtureClient(),FixtureClient()
+    elif config.get('llm_roles'):
+        from .llm_roles import RoutedClient
+        actor,judge=RoutedClient(config,endpoint),RoutedClient(config,endpoint)
     else:
         actor=ModelClient(endpoint,config['model'],max_tokens=config['actor_max_tokens'])
         judge=ModelClient(endpoint,config['judge_model'],max_tokens=config['actor_max_tokens'])
@@ -215,6 +218,7 @@ def main():
     p.add_argument('--resume-baselines-from')
     p.add_argument('--candidate-workers',type=int,choices=(1,2,3),default=1)
     p.add_argument('--candidate-base-urls',nargs='+')
+    p.add_argument('--llm-config',help='Versioned YAML workflow-node model configuration')
     p.add_argument('--search-profile',help='Explicitly opt into a versioned search configuration')
     p.add_argument('--continuous',action='store_true',help='Bounded multi-generation UCT frontier search')
     p.add_argument('--max-candidates',type=int,default=6)
@@ -287,6 +291,16 @@ def main():
                      'timeout_s':args.optimizer_timeout_s},
         'codegen':{'max_tokens':args.codegen_max_tokens,'temperature':args.codegen_temperature,
                    'timeout_s':args.optimizer_timeout_s}}
+    if args.llm_config:
+        from .llm_roles import install
+        if args.resume_search and saved.get('llm_roles'):
+            if hashlib.sha256(Path(args.llm_config).read_bytes()).hexdigest()!=saved['llm_roles']['source_sha256']:
+                p.error('LLM YAML changed; start a new experiment')
+            config['llm_roles']=saved['llm_roles']
+        else:
+            install(config,args.llm_config)
+        config['llm_baseline_roles']={key:config['llm_roles']['resolved'][key] for key in ('actor','judge')}
+        config['llm_baseline_roles']['router_sha256']=hashlib.sha256((Path(__file__).parent/'llm_roles.py').read_bytes()).hexdigest()
     config['observability_schema']='local-spans-v1';config['rationale_schema']='evidence-v4-structured-diagnosis'
     config['reflexion_stages']=['proposals'] if args.no_diagnosis else ['diagnosis','proposals']
     config['baseline_runtime_sha256']=baseline_runtime_fingerprint()
@@ -324,10 +338,16 @@ def main():
         sessions,queries=fixture_dataset();actor_client=FixtureClient();judge_client=FixtureClient();optimizer=FixtureClient()
     else:
         sessions,queries=load_medmemory(args.dataset,args.language)
-        actor_client=ModelClient(args.base_url,args.model,max_tokens=1024)
-        judge_client=ModelClient(args.judge_url or args.base_url,args.judge_model or args.model,max_tokens=1024)
-        optimizer=ModelClient(args.base_url,args.model,
-                              role_settings=config['optimizer_generation_settings'])
+        if config.get('llm_roles'):
+            from .llm_roles import RoutedClient
+            actor_client=RoutedClient(config,args.base_url)
+            judge_client=RoutedClient(config,args.base_url)
+            optimizer=RoutedClient(config,args.base_url)
+        else:
+            actor_client=ModelClient(args.base_url,args.model,max_tokens=1024)
+            judge_client=ModelClient(args.judge_url or args.base_url,args.judge_model or args.model,max_tokens=1024)
+            optimizer=ModelClient(args.base_url,args.model,
+                                  role_settings=config['optimizer_generation_settings'])
     split=patient_splits([s['persona_id'] for s in sessions],config['seed'])
     config['split_patient_counts']={k:len(v) for k,v in split.items()}
     # Diagnostic subset keeps test sealed and stays within each original split.

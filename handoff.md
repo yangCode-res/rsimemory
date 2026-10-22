@@ -330,3 +330,8 @@ Future scripts.langfuse_run imports automatically publish v2. This is still inde
 ## 2026-10-22 连续搜索接入
 
 用户确认最多6候选、每次2个、最深3代，允许验证参与选择并作为开发集；实现后不启动GPU。新增 rsi.continuous 与 CLI --search-profile/--continuous/--resume-search；配置 deploy/evolution-search.json，Slurm仅 RSI_CONTINUOUS_SEARCH=1 显式启用。奖励固定 development validation E2E AVG，test封存；UCT未展开前沿每节点只展开一次，记录真实选择、原子检查点与防重复回传，部分回放保留后重跑。旧干预绑定BM25，连续模式明确禁用。中文总览支持血缘、开发集提示与每次展开诊断。详见 docs/CONTINUOUS-SEARCH.md。真实连续搜索未启动，153107不变。
+
+
+## 2026-10-22 YAML五节点模型入口
+
+新增 --llm-config configs/llm-roles.yaml；actor/judge/diagnosis/proposals/codegen 可独立model/base_url/生成参数与api_key_env。diagnosis/proposals显式按阶段路由，调用统计与原generation角色兼容。并行副本仅在未指定URL时继承；解析结果与hash归档，resume拒绝配置变化，基线复用校验actor/judge实际角色配置。Slurm显式RSI_LLM_CONFIG启用。不自动部署模型/服务，不改当前153107，无新GPU作业。详见docs/LLM-ROLES.md。

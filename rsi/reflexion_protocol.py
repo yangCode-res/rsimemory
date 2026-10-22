@@ -299,7 +299,8 @@ def call_validated_stage(client: Any, stage: str, messages: list[dict[str, str]]
         client_calls = getattr(client, "calls", None)
         call_start = len(client_calls) if hasattr(client_calls, "__len__") else None
         try:
-            response = client.complete(attempt_messages, role="reflexion", json_mode=True, json_schema=schema)
+            stage_client = client.for_stage(stage) if hasattr(client,"for_stage") else client
+            response = stage_client.complete(attempt_messages, role="reflexion", json_mode=True, json_schema=schema)
             attempt["response"] = copy.deepcopy(response)
             attempt["usage"] = copy.deepcopy(response.get("usage", {})) if isinstance(response, dict) else {}
             attempt["cost"] = _normalized_cost(response)

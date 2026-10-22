@@ -41,3 +41,5 @@ python -m rsi.cli --dataset /file_storage01/home/juanliu/25_ymj/code/MedMemoryBe
 超算 Linux 完整回归：185 项通过运行，1 项跳过（2026-10-22）。152743 的 23 项必需归档文件、冻结 Git 源码与训练 772/验证 380 题已通过实际恢复预检；BGE 两折也完整。预检未调用模型，未读取 test。最终部署后若追加校验测试，以运行日志的最终统计为准。
 
 最终补充恢复校验 20 项通过（含真实数据 revision 必须可核验、Python/cloudpickle 版本冻结）。修复实现 commit d94afbefa5c652d1f8f9248ed7d4ba6914ce7cfb，恢复作业 153104 指定 gpu16。作业提交不等于反思/候选成功，后续通过新归档判断结果。
+
+153104 调度修正：已通过 scontrol 原地解除 gpu16 绑定（ReqNodeList 为空），仅排除此前暂存磁盘满的 gpu36/gpu37。作业号与实验配置保持不变，调度变更已追加到 runs/rerun-launch-153104.json；实际启动仍以 Slurm 状态为准。

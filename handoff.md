@@ -291,3 +291,5 @@ ssh -N -L 127.0.0.1:3000:127.0.0.1:3000 \
 --resume-baselines-from 仅复用经归档哈希、config-hash、冻结 runtime 文件、模型/数据/划分、完整进度/问题映射检查的基线产物；baseline-reuse.json 记录来源。新 run 重新诊断、代码生成，三个候选仍空状态完整回放，不恢复旧 policy 快照，不读 test。旧基线调用不伪造成新调用轨迹，成本保留原报告。原生 262144 服务上下文、8192/.7 反思与16384/.4代码生成输出设置不变。详见 docs/REFLEXION-v4.md。
 
 修复部署 commit：d94afbefa5c652d1f8f9248ed7d4ba6914ce7cfb。Linux 完整回归 185 项、1 跳过，最终补充恢复/失败退出测试 20 项通过。实际旧基线预检两次均 verified（23 个必需文件、772/380 题、BM25/BGE 完整）。恢复作业 153104 已提交，指定 gpu16，从 152743 完整基线恢复；归档 runs/full-v03-local-153104，启动回执 runs/rerun-launch-153104.json。此记录仅表示已提交，不代表候选已产生或准确率已提高；后续须查 run-status.json、各阶段 progress、归档校验与 Slurm 状态。
+
+153104 调度修正：已通过 scontrol 原地解除 gpu16 绑定（ReqNodeList 为空），仅排除此前暂存磁盘满的 gpu36/gpu37。作业号与实验配置保持不变，调度变更已追加到 runs/rerun-launch-153104.json；实际启动仍以 Slurm 状态为准。

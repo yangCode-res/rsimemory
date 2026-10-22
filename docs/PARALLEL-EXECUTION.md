@@ -49,3 +49,7 @@ python -m rsi.cli ... --candidate-workers 3 \
 超算 Linux 完整回归198项，1项跳过。新增测试用三方Barrier验证候选确实重叠执行，检查端点/客户端独立、提案顺序合并和UCT三次回传；覆盖单候选错误隔离、服务不可用取消、已就绪副本提前退出、启动失败清理及大Unicode轨迹并发写入。沙箱真实并发测试保留seccomp/Landlock和CPU/内存限制。
 
 原双卡153104已按用户切换请求正常停止，归档_manifest.verified=true；没有开始候选回放。该次退出保留为历史中断，不计为候选退化或成功进化。
+
+实际合成CLI闭环 runs/fixture-six-gpu-parallel-20261022 已完成：三个候选全部evaluated，分别绑定7862/7863/7864，从空记忆经真实Linux隔离worker完成train/validation。合成评分均1.0只说明协议正确，不是MedMemoryBench实验成绩。旧真实基线152743在并行版本上再次通过23文件/772训练题/380验证题预检。
+
+六卡并行实现版本55ecef4baa084280664f16bd6551946ee7ff0c4e。新作业153107已在gpu22运行，Slurm确认6GPU/48CPU/256GiB，当前处于启动阶段；回执runs/rerun-launch-153107.json，归档runs/full-v03-local-153107。未宣称副本已就绪、候选已开始或吞吐已提升。

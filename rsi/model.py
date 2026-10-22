@@ -102,7 +102,7 @@ class ModelClient:
                                        {"name": role, "schema": json_schema, "strict": True}}
         elif json_mode:
             body["response_format"] = {"type": "json_object"}
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "rsi-experiment/1.0"}
         if self.api_key:
             headers["Authorization"] = "Bearer " + self.api_key
         request = urllib.request.Request(

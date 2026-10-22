@@ -13,6 +13,13 @@ umask 077
 ROOT=/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi
 DATA=/file_storage01/home/juanliu/25_ymj/code/MedMemoryBench
 PY="$ROOT/.venv/bin/python"
+# Private credentials never enter the archived role YAML or CLI arguments.
+LLM_ENV_FILE=${RSI_LLM_ENV_FILE:-$ROOT/.secrets/llm.env}
+if [[ -r "$LLM_ENV_FILE" ]]; then
+  set -a
+  source "$LLM_ENV_FILE"
+  set +a
+fi
 ARCHIVE="$ROOT/runs/full-v03-local-$SLURM_JOB_ID"
 STORAGE_JSON=$("$PY" "$ROOT/scripts/round_storage.py" create --job-id "$SLURM_JOB_ID")
 LOCAL=$(printf '%s' "$STORAGE_JSON" | "$PY" -c 'import sys,json; print(json.load(sys.stdin)["path"])')
@@ -93,6 +100,8 @@ export SGLANG_DG_CACHE_DIR="$LOCAL/cache/deep_gemm" CUTE_DSL_CACHE_DIR="$LOCAL/c
 export HF_HOME="$LOCAL/cache/huggingface" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 "$PY" scripts/preflight_v03.py --dataset "$DATA" > "$META/preflight.json"
 echo PREFLIGHT_OK
+"$PY" scripts/preflight_external_llm.py --config "$META/llm-roles.yaml" > "$META/external-llm-preflight.json"
+echo EXTERNAL_LLM_PREFLIGHT_OK
 (
   trap 'exit 0' TERM INT
   while true; do
@@ -130,7 +139,7 @@ fi
 LLM_ARGS=(--llm-config "$META/llm-roles.yaml")
 SEARCH_ARGS=()
 if [[ "${RSI_CONTINUOUS_SEARCH:-0}" == 1 ]]; then
-  SEARCH_ARGS=(--search-profile "$ROOT/deploy/evolution-search.json")
+  SEARCH_ARGS=(--search-profile "$CODE/deploy/evolution-search.json")
 fi
 setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   --base-url http://127.0.0.1:7862/v1 \

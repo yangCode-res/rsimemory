@@ -10,3 +10,4 @@ deploy/langfuse/credentials*
 observability-runtime/
 observability-images/
 observability/
+.secrets/

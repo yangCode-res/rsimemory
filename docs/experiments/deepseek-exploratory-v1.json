@@ -1,0 +1,56 @@
+{
+  "version": "deepseek-exploratory-v1",
+  "comparison_arm": "qwen-153572",
+  "matching": "exploratory_not_controlled",
+  "initial_state": "fresh BM25 root; BGE comparison only; no existing candidates or candidate snapshots",
+  "search_budget": {
+    "max_candidates": 6,
+    "children_per_expansion": 2,
+    "max_depth": 3,
+    "c": 1.414
+  },
+  "reward": "development_validation_E2E_AVG",
+  "test_evaluated": false,
+  "changed_optimizer_nodes": [
+    "diagnosis",
+    "proposals",
+    "codegen"
+  ],
+  "optimizer_model": "deepseek-v4-flash",
+  "actor_model": "qwen3.8-27b",
+  "judge_model": "qwen3.8-27b",
+  "new_profile": "configs/llm-roles-deepseek-v4-flash.yaml",
+  "baseline_reuse": false,
+  "new_actor_protocol": "react-final-answer-schema-v2",
+  "old_actor_max_tokens": 1024,
+  "old_optimizer_settings": {
+    "reflexion": {
+      "max_tokens": 8192,
+      "temperature": 0.7,
+      "timeout_s": 900.0
+    },
+    "codegen": {
+      "max_tokens": 16384,
+      "temperature": 0.4,
+      "timeout_s": 900.0
+    }
+  },
+  "new_actor_max_tokens": 4096,
+  "new_optimizer_max_tokens": null,
+  "known_confounders": [
+    "answer-only forced-final protocol",
+    "actor output budget",
+    "optimizer output budget and provider behavior",
+    "newly measured baselines and model sampling variability"
+  ],
+  "analysis": [
+    "Compare strict/E2E metrics, abnormalities, type tradeoffs, model tokens, execution cost and actual UCT frontier choices.",
+    "Inspect observed failures separately from model cause attribution; unresolved is not a failed diagnosis call.",
+    "Audit proposal mechanism and predictions separately from code implementation fidelity.",
+    "No claim that model/prompt/proposal/codegen is the sole cause from this combined-node switch."
+  ],
+  "future_only_not_authorized_or_launched": [
+    "Fixed proposal, swap Qwen/DeepSeek codegen with identical replay protocol.",
+    "Fixed model and parent evidence, compare prompt variants."
+  ]
+}

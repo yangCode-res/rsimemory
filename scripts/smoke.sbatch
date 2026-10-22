@@ -16,6 +16,13 @@ LLM_CONFIG=${RSI_LLM_CONFIG:-$ROOT/configs/llm-roles.yaml}
 [[ -r "$LLM_CONFIG" ]] || { echo LLM_CONFIG_MISSING; exit 1; }
 PY="$SGL/venv/bin/python"
 [[ ! -x "$ROOT/.venv/bin/python" ]] || PY="$ROOT/.venv/bin/python"
+# Private credentials never enter the archived role YAML or CLI arguments.
+LLM_ENV_FILE=${RSI_LLM_ENV_FILE:-$ROOT/.secrets/llm.env}
+if [[ -r "$LLM_ENV_FILE" ]]; then
+  set -a
+  source "$LLM_ENV_FILE"
+  set +a
+fi
 export PORT=7861 HOST=127.0.0.1 TP_SIZE=2
 setsid "$SGL/launch.sh" > "$ROOT/runs/server-$SLURM_JOB_ID.log" 2>&1 &
 PID=$!

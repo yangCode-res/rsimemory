@@ -1,6 +1,11 @@
 """Run baselines, train-only reflection, three code branches and validation."""
 from __future__ import annotations
 import argparse
+import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
+import threading
+import time
 import hashlib
 import json
 import math
@@ -79,6 +84,109 @@ def _record_round_failure(out, exc, optimizer=None):
     return summary
 
 
+class _CancellableClient:
+    def __init__(self, client, cancelled):
+        self.client, self.cancelled = client, cancelled
+
+    @property
+    def calls(self):
+        return self.client.calls
+
+    @property
+    def base_url(self):
+        return getattr(self.client,'base_url',None)
+
+    def complete(self, *args, **kwargs):
+        if self.cancelled.is_set():
+            raise ModelServiceUnavailable('Candidate execution cancelled after a peer failure')
+        return self.client.complete(*args, **kwargs)
+
+
+def _candidate_clients(args, config, endpoint, actor_client, judge_client, cancelled):
+    if args.candidate_workers==1 and not args.candidate_base_urls:
+        actor,judge=actor_client,judge_client
+    elif args.fixture:
+        actor,judge=FixtureClient(),FixtureClient()
+    else:
+        actor=ModelClient(endpoint,config['model'],max_tokens=config['actor_max_tokens'])
+        judge=ModelClient(endpoint,config['judge_model'],max_tokens=config['actor_max_tokens'])
+    return _CancellableClient(actor,cancelled),_CancellableClient(judge,cancelled)
+
+
+def _evaluate_candidate(job,args,config,sessions,run_queries,run_ids,
+                        actor_client,judge_client,endpoint,cancelled):
+    name,branch=job['name'],job['branch']
+    node=copy.deepcopy(job['node'])
+    node['inference_endpoint']=endpoint
+    stage='initialize';metrics=None;started=time.perf_counter()
+    actor,judge=_candidate_clients(args,config,endpoint,actor_client,judge_client,cancelled)
+    actor_call_start,judge_call_start=len(actor.calls),len(judge.calls)
+    try:
+        with trace_span('candidate.execution',metadata={'policy':name,'inference_endpoint':endpoint,
+                        'execution_mode':config['candidate_execution']['mode']}) as span:
+            _set_stage(branch,stage)
+            factory=lambda:GeneratedPolicy(job['source'],config,timeout_s=args.candidate_timeout_s,
+                                            memory_bytes=args.candidate_memory_mb*1024*1024)
+            if cancelled.is_set(): raise ModelServiceUnavailable('Candidate execution cancelled')
+            factory()  # Verify isolation before replay; every patient still gets fresh state.
+            stage='train';_set_stage(branch,stage)
+            t,_=replay(sessions,run_queries['train'],run_ids['train'],factory,actor,judge,config,branch/'train')
+            if cancelled.is_set(): raise ModelServiceUnavailable('Candidate execution cancelled')
+            stage='validation';_set_stage(branch,stage)
+            v,_=replay(sessions,run_queries['validation'],run_ids['validation'],factory,actor,judge,config,branch/'validation')
+            node['status']='evaluated' if t['AVG'] is not None and v['AVG'] is not None else 'incomplete_scoring'
+            node.update(train_AVG=t['AVG'],validation_AVG=v['AVG'])
+            metrics=comparison_metric(v);metrics['valid']=node['status']=='evaluated'
+            span.update(output={'status':node['status'],'train_AVG':t['AVG'],'validation_AVG':v['AVG']})
+    except ModelServiceUnavailable as exc:
+        cancelled.set()
+        exc.stage=name+'.'+stage
+        exc.category='service_unavailable'
+        dump(branch/'run-status.json',{'status':'failed','stage':stage,'category':'service_unavailable'})
+        raise
+    except Exception as exc:
+        node.update(status='invalid',failure=f'{type(exc).__name__}: {exc}',failure_stage=stage,
+                    failure_category=getattr(exc,'category','runtime'))
+        dump(branch/'failure.json',{'reason':node['failure'],'category':node['failure_category'],
+                                   'stage':stage,'policy_cost':getattr(exc,'policy_cost',None)})
+    else:
+        dump(branch/'run-status.json',{'status':'completed','stage':'candidate.finished',
+                                      'scoring_status':node['status'],'test_evaluated':False})
+    finally:
+        dump(branch/'execution.json',{'endpoint':endpoint,'mode':config['candidate_execution']['mode'],
+             'wall_seconds':time.perf_counter()-started,
+             'model_cost':call_cost(actor.calls[actor_call_start:]+judge.calls[judge_call_start:]),
+             'test_evaluated':False})
+    if node['status']=='invalid':
+        dump(branch/'run-status.json',{'status':'failed','stage':stage,'category':node['failure_category']})
+    with trace_span('candidate.result',metadata={'policy':name}) as span:
+        span.update(output=node)
+    return name,node,metrics
+
+
+def _run_candidate_jobs(jobs,args,config,sessions,run_queries,run_ids,
+                        actor_client,judge_client,accept):
+    cancelled=threading.Event()
+    endpoints=args.candidate_base_urls or [args.base_url]
+    def run(job,index):
+        return _evaluate_candidate(job,args,config,sessions,run_queries,run_ids,
+                                    actor_client,judge_client,
+                                    endpoints[job.get('replica_index',index)%len(endpoints)],cancelled)
+    if args.candidate_workers==1:
+        for index,job in enumerate(jobs): accept(run(job,index))
+        return
+    # Each worker owns model clients, policy state, progress and trace context.
+    # Shared tree/Git/report writes remain on the coordinator thread.
+    with ThreadPoolExecutor(max_workers=args.candidate_workers,thread_name_prefix='rsi-candidate') as pool:
+        futures=[pool.submit(copy_context().run,run,job,index) for index,job in enumerate(jobs)]
+        try:
+            for future in as_completed(futures): accept(future.result())
+        except BaseException:
+            cancelled.set()
+            for future in futures: future.cancel()
+            raise
+
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--dataset')
@@ -105,7 +213,17 @@ def main():
     p.add_argument('--optimizer-timeout-s',type=float,default=900.)
     p.add_argument('--reflexion-max-corrections',type=int,default=1)
     p.add_argument('--resume-baselines-from')
+    p.add_argument('--candidate-workers',type=int,choices=(1,2,3),default=1)
+    p.add_argument('--candidate-base-urls',nargs='+')
     args=p.parse_args()
+    if args.candidate_base_urls and len(args.candidate_base_urls)!=args.candidate_workers:
+        p.error('Provide exactly one candidate endpoint per worker')
+    if args.candidate_workers>1 and not args.candidate_base_urls:
+        p.error('Parallel candidates require independent --candidate-base-urls')
+    if args.candidate_base_urls and len(set(args.candidate_base_urls))!=len(args.candidate_base_urls):
+        p.error('Candidate replica endpoints must be distinct')
+    if args.candidate_workers>1 and args.judge_url:
+        p.error('Parallel candidate actor/judge use each replica; omit --judge-url')
     if not 0 <= args.reflexion_max_corrections <= 2:
         p.error('Reflexion corrections must be between 0 and 2')
     if args.resume_baselines_from and not args.evolve:
@@ -141,6 +259,13 @@ def main():
     config['diagnostic_selection_version']='training-diagnostics-coverage-v1'
     config['reflexion_input_budget']=None
     config['reflexion_case_targets']={'failures':12,'successes':4}
+    config['candidate_execution']={'mode':'parallel' if args.candidate_workers>1 else 'serial',
+        'workers':args.candidate_workers,'endpoints':args.candidate_base_urls or [args.base_url],
+        'merge_order':'proposal_order','state':'fresh_replay_per_candidate',
+        'version':'candidate-concurrent-v1','codegen_order':'serial_then_candidate_replays'}
+    config['candidate_runtime_sha256']={name:hashlib.sha256(
+        (Path(__file__).resolve().parent/name).read_bytes()).hexdigest()
+        for name in ('sandbox.py','tracing.py')}
     config['parent_source_version']=SOURCE_VERSION
     config['python_version']=sys.version.split()[0]
     try: config['cloudpickle_version']=version('cloudpickle')
@@ -239,7 +364,7 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
     dump(out/'summary.json',{'status':'running','comparison':comparisons,'branches':[],
                             'baseline_reuse':reused,'test_evaluated':False})
     lookup={q['query_id']:q for q in run_queries['train']}
-    branches=[];seen_code={}
+    branches=[];seen_code={};candidate_jobs=[]
     if args.evolve:
         _set_stage(out,'diagnostics')
         diagnostics = None
@@ -304,22 +429,8 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
                 seen_code[code_hash]=name
                 node['commit']=commit_policy(out/'policy-git',source,name,root_commit)
                 dump(out/'tree.json',tree)
-                factory=lambda source=source:GeneratedPolicy(source,config,timeout_s=args.candidate_timeout_s,memory_bytes=args.candidate_memory_mb*1024*1024)
-                # Constructor verifies mandatory OS isolation before any replay.
-                stage='initialize'
-                _set_stage(out,name+'.'+stage)
-                factory()
-                stage='train'
-                _set_stage(out,name+'.'+stage)
-                t,_=replay(sessions,run_queries['train'],run_ids['train'],factory,actor_client,judge_client,config,branch/'train')
-                stage='validation'
-                _set_stage(out,name+'.'+stage)
-                v,_=replay(sessions,run_queries['validation'],run_ids['validation'],factory,actor_client,judge_client,config,branch/'validation')
-                node['status']='evaluated' if t['AVG'] is not None and v['AVG'] is not None else 'incomplete_scoring'
-                node['train_AVG']=t['AVG'];node['validation_AVG']=v['AVG']
-                if node['status']=='evaluated': backprop(tree,name,t['AVG'])
-                comparisons[name]=comparison_metric(v)
-                comparisons[name]['valid']=node['status']=='evaluated'
+                candidate_jobs.append({'name':name,'node':copy.deepcopy(node),'source':source,
+                                       'branch':branch,'replica_index':i})
             except ModelServiceUnavailable:
                 raise
             except Exception as exc:
@@ -333,13 +444,30 @@ def _run_round(args,out,config,split,run_ids,run_queries,sessions,actor_client,j
                 dump(branch/'failure.json',{'reason':node['failure'],'category':node['failure_category'],
                                            'stage':stage,'policy_cost':getattr(exc,'policy_cost',None)})
             dump(out/'tree.json',tree)
-            with trace_span('candidate.result', metadata={'policy':name}) as observation:
+            with trace_span('candidate.result' if node['status']=='invalid' else 'candidate.prepared',
+                            metadata={'policy':name}) as observation:
                 observation.update(output=node)
             branches.append(node)
             dump(out/'summary.json',{'status':'running','comparison':comparisons,'branches':branches,
                                     'baseline_reuse':reused,'test_evaluated':False})
+        _set_stage(out,'candidates.parallel' if args.candidate_workers>1 else 'candidates.serial')
+        def accept(result):
+            name,node,metrics=result
+            tree['nodes'][name]=node
+            for index,branch_node in enumerate(branches):
+                if branch_node['id']==name: branches[index]=node
+            if metrics is not None: comparisons[name]=metrics
+            dump(out/'tree.json',tree)
+            dump(out/'summary.json',{'status':'running','comparison':comparisons,'branches':branches,
+                                    'execution':config['candidate_execution'],
+                                    'baseline_reuse':reused,'test_evaluated':False})
+        _run_candidate_jobs(candidate_jobs,args,config,sessions,run_queries,run_ids,
+                            actor_client,judge_client,accept)
+        # Stable proposal-order aggregation, independent of completion order.
+        for node in branches:
+            if node['status']=='evaluated': backprop(tree,node['id'],node['train_AVG'])
     dump(out/'tree.json',tree)
-    summary={'status':'completed','baseline_reuse':reused,
+    summary={'status':'completed','baseline_reuse':reused,'execution':config['candidate_execution'],
              'evolution_outcome':('evaluated_candidates' if any(n['status']=='evaluated' for n in branches) else
                                   'no_fully_scored_candidates') if args.evolve else 'not_requested',
              'contract_version':config['contract_version'],'fixture':args.fixture,'scientific_result':False if args.fixture else 'engineering rubric; uncalibrated',

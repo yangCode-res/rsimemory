@@ -32,6 +32,27 @@ MAX_SOURCE_BYTES = 4 * 1024 * 1024
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 
+# Executed by a fresh interpreter before importing rsi.sandbox. Keep this
+# bootstrap trusted and self-contained: candidate source and request data only
+# arrive later on stdin, after both process limits have been installed.
+_CHILD_BOOTSTRAP = """
+import json, math, resource, runpy, sys
+try:
+    memory_bytes, timeout_s = int(sys.argv[1]), float(sys.argv[2])
+    cpu_seconds = max(1, math.ceil(timeout_s))
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+    if not hasattr(resource, 'RLIMIT_AS'):
+        raise RuntimeError('RLIMIT_AS is unavailable')
+    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+except Exception as exc:
+    sys.stdout.write(json.dumps({'error': 'required worker resource limits could not be applied',
+                                 'category': 'isolation', 'error_type': type(exc).__name__}))
+    sys.stdout.flush()
+    raise SystemExit(1)
+sys.argv = ['rsi.sandbox', '--child']
+runpy.run_module('rsi.sandbox', run_name='__main__')
+""".strip()
+
 
 class SandboxError(RuntimeError):
     """Candidate rejected, failed, or exceeded its execution bounds."""
@@ -322,17 +343,6 @@ def _child_main() -> int:
         return 1
 
 
-def _limits(memory_bytes: int, timeout_s: float):
-    """Apply required Linux process limits; failure prevents worker startup."""
-    import resource
-
-    cpu_seconds = max(1, math.ceil(timeout_s))
-    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
-    if not hasattr(resource, "RLIMIT_AS"):
-        raise RuntimeError("RLIMIT_AS is unavailable")
-    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-
-
 def run_candidate(source: str, operation: str, payload: dict[str, Any], *,
                   timeout_s: float = 30.0, memory_bytes: int = 2 * 1024 * 1024 * 1024) -> dict[str, Any]:
     if not isolation_available():
@@ -346,11 +356,11 @@ def run_candidate(source: str, operation: str, payload: dict[str, Any], *,
     if len(raw) > MAX_INPUT_BYTES:
         raise ContractError("sandbox input exceeds size limit")
     package_root = Path(__file__).resolve().parent.parent
-    command = [sys.executable, "-m", "rsi.sandbox", "--child"]
+    command = [sys.executable, "-c", _CHILD_BOOTSTRAP,
+               str(int(memory_bytes)), str(float(timeout_s))]
     try:
         proc = subprocess.run(command, input=raw, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               cwd=str(package_root), env={"OPENBLAS_NUM_THREADS":"1", "OMP_NUM_THREADS":"1", "MKL_NUM_THREADS":"1"}, timeout=max(0.05, timeout_s),
-                              preexec_fn=(lambda: _limits(memory_bytes, timeout_s)) if os.name == "posix" else None,
                               check=False)
     except subprocess.TimeoutExpired as exc:
         raise SandboxError("candidate exceeded wall-clock limit") from exc

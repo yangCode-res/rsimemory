@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 import copy
+from concurrent.futures import ThreadPoolExecutor
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -381,15 +383,47 @@ def search(state, query, filters):
 
 @unittest.skipUnless(worker_available(), "seccomp/Landlock probe requires complete Linux isolation")
 class IsolationOSBoundary(unittest.TestCase):
-    def test_resource_limit_setup_failure_fails_closed(self):
-        def fail_during_preexec(*args, **kwargs):
-            kwargs["preexec_fn"]()
+    def test_child_bootstrap_sets_both_limits_before_loading_worker_without_preexec(self):
+        cpu_limit = sandbox._CHILD_BOOTSTRAP.index("resource.setrlimit(resource.RLIMIT_CPU")
+        memory_limit = sandbox._CHILD_BOOTSTRAP.index("resource.setrlimit(resource.RLIMIT_AS")
+        worker_load = sandbox._CHILD_BOOTSTRAP.index("runpy.run_module('rsi.sandbox'")
+        self.assertLess(cpu_limit, worker_load)
+        self.assertLess(memory_limit, worker_load)
+        self.assertIn("cpu_seconds + 1", sandbox._CHILD_BOOTSTRAP)
+
+        def check_command(command, **kwargs):
+            self.assertEqual(command[1], "-c")
+            self.assertEqual(command[2], sandbox._CHILD_BOOTSTRAP)
+            self.assertNotIn("preexec_fn", kwargs)
+            self.assertEqual(command[3:], [str(2 * 1024 * 1024 * 1024), "30.0"])
+            return sandbox.subprocess.CompletedProcess(command, 0, b'{"ok": true}', b"")
 
         with patch.object(sandbox, "isolation_available", return_value=True), \
-             patch.object(sandbox, "_limits", side_effect=RuntimeError("no limit")), \
-             patch.object(sandbox.subprocess, "run", side_effect=fail_during_preexec):
-            with self.assertRaisesRegex(SandboxError, "resource-limited worker"):
+             patch.object(sandbox.subprocess, "run", side_effect=check_command):
+            self.assertEqual(run_candidate(MINIMAL_SOURCE, "initialize", {"config": {}}), {"ok": True})
+
+    def test_bootstrap_limit_failure_is_returned_as_isolation_error(self):
+        def fail_during_child(command, **kwargs):
+            self.assertNotIn("preexec_fn", kwargs)
+            return sandbox.subprocess.CompletedProcess(command, 1,
+                b'{"error":"required worker resource limits could not be applied",'
+                b'"category":"isolation","error_type":"RuntimeError"}', b"")
+
+        with patch.object(sandbox, "isolation_available", return_value=True), \
+             patch.object(sandbox.subprocess, "run", side_effect=fail_during_child):
+            with self.assertRaisesRegex(SandboxError, "resource limits") as raised:
                 run_candidate(MINIMAL_SOURCE, "initialize", {"config": {}})
+        self.assertEqual(raised.exception.category, "isolation")
+
+    def test_parallel_workers_apply_isolation_independently(self):
+        def run_one(_):
+            return run_candidate(MINIMAL_SOURCE, "initialize", {"config": {}})
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            results = list(pool.map(run_one, range(3)))
+        self.assertEqual(len(results), 3)
+        self.assertTrue(all(result.get("serializable") is True for result in results))
+        self.assertTrue(all(isinstance(result.get("state"), dict) for result in results))
 
 
 if __name__ == "__main__":

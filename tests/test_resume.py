@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rsi.resume import (BASELINE_FILES, PROVENANCE_FILES, RUNTIME_FILES, ResumeError,
                         baseline_runtime_fingerprint, materialize_baseline_resume,
-                        verify_baseline_resume)
+                        verify_baseline_resume, _check_runtime)
 
 
 class BaselineResumeTests(unittest.TestCase):
@@ -20,6 +20,7 @@ class BaselineResumeTests(unittest.TestCase):
         source_rsi = Path(__file__).resolve().parents[1] / "rsi"
         for name in RUNTIME_FILES:
             shutil.copy2(source_rsi / name, self.repo / "rsi" / name)
+        shutil.copy2(source_rsi / "sandbox.py", self.repo / "rsi" / "sandbox.py")
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "add", "rsi"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Test", "-c",
@@ -228,6 +229,20 @@ class BaselineResumeTests(unittest.TestCase):
         self.dump(self.source / "config-hash.json", {"sha256": hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()})
         self._rewrite_manifest()
         self.assertEqual("config-fingerprint", self.verify(config=config)["runtime_provenance"]["method"])
+
+    def test_candidate_isolation_file_is_outside_frozen_baseline_scope(self):
+        fingerprint = baseline_runtime_fingerprint(self.repo)
+        self.assertNotIn("sandbox.py", fingerprint)
+        sandbox_path = self.repo / "rsi" / "sandbox.py"
+        sandbox_path.write_text(sandbox_path.read_text() + "\n# candidate-only isolation change\n")
+        self.assertEqual(fingerprint, baseline_runtime_fingerprint(self.repo))
+
+        config = {"baseline_runtime_sha256": fingerprint}
+        self.assertEqual("config-fingerprint", _check_runtime(config, self.repo)["method"])
+        actor_path = self.repo / "rsi" / "actor.py"
+        actor_path.write_text(actor_path.read_text() + "\n# baseline execution change\n")
+        with self.assertRaisesRegex(ResumeError, "frozen runtime source mismatch; file=actor.py"):
+            _check_runtime(config, self.repo)
 
 
 if __name__ == "__main__":

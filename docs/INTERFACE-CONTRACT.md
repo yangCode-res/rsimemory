@@ -1,5 +1,7 @@
 # Memory Policy Interface Contract
 
+2026-10-22 并行执行更新：全量 Slurm 默认申请 6 GPU、48 CPU、256 GiB，启动三个独立 TP=2 SGLang 副本；按 Slurm CUDA_VISIBLE_DEVICES 的实际分配拆分双卡，端口7862/7863/7864，缓存、日志、健康监控各自独立。离线诊断和三个代码生成保持顺序依赖；准备完候选后，三个候选各绑定一个副本并行执行 train→validation。每个候选仍从空记忆完整回放，actor/judge 参数、题目、评分、UCT/Pareto 不变，test继续封存。主线程按提案顺序合并树与收益，轨迹上下文及模型客户端独立。详见 docs/PARALLEL-EXECUTION.md。
+
 2026-10-22 更新：离线链路升级 `explore-v4-structured-reflexion` / `evidence-v4-structured-diagnosis`，诊断与三个提案分阶段；观察、机制假设、置信度分字段，允许 unresolved。每阶段默认一次有限纠正，完整记录各次请求/响应/字段错误；耗尽以 failed、非零退出。经校验的基线可在新 run 复用，候选仍从空状态完整 replay。冻结回答协议、policy 实现自由度与评分/奖励规则不变。详见 [结构化反思与恢复](REFLEXION-v4.md)。
 
 2026-10-21 更新：优化器诊断使用完整训练分布与覆盖采样的 12 个失败＋4 个成功；应用层输入预算为 null，取消字段/列表摘录和超预算删案例。完整父源码与全部选中案例保留，物理 provider 上下文超限作为显式失败留档。提示版本为 `explore-v3-full-diagnostics`；policy v0.3 入口、查询只读、冻结 actor、隔离和评分规则不变。详见 [problem.md](../problem.md)。

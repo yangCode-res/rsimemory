@@ -9,8 +9,12 @@ import shutil
 import subprocess
 
 
+# This versioned scope covers files that produce the frozen BM25/BGE baseline.
+# Candidate isolation is recorded separately and is not part of that replay
+# path; legacy fingerprints may contain extra sandbox/worker entries, which are
+# ignored when checking this explicit scope.
 RUNTIME_FILES = ("actor.py", "evaluation.py", "data.py", "policy.py", "model.py",
-                 "runtime.py", "sandbox.py", "policy_source.py")
+                 "runtime.py", "policy_source.py")
 FOLDS = ("train", "validation")
 FROZEN_FIELDS = (
     "contract_version", "interface_version", "state_serializer", "language", "mode",
@@ -74,13 +78,15 @@ def _sha(path: Path):
 
 
 def baseline_runtime_fingerprint(code_root=None) -> dict[str, str]:
-    """Return SHA-256 fingerprints for the frozen replay implementation files."""
+    """Fingerprint only the versioned baseline execution files (scope v1).
+
+    Candidate isolation files are a separately recorded configuration and are
+    not used by the BM25/BGE baseline replay path.
+    """
     root = Path(code_root) if code_root is not None else Path(__file__).resolve().parent
     if (root / "rsi").is_dir():
         root = root / "rsi"
     names = list(RUNTIME_FILES)
-    if (root / "worker.py").is_file():
-        names.append("worker.py")
     result = {}
     for name in names:
         path = root / name

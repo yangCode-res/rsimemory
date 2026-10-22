@@ -3,9 +3,9 @@
 #SBATCH --partition=gre
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:2
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --gres=gpu:6
+#SBATCH --cpus-per-task=48
+#SBATCH --mem=256G
 #SBATCH --time=48:00:00
 #SBATCH --output=/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/runs/full-%j.log
 set -euo pipefail
@@ -27,23 +27,36 @@ printf '%s\n' "$STORAGE_JSON" > "$META/storage.json"
 printf '%s\n' "$LOCAL" > "$META/local-root"
 printf '%s\n' "$SLURMD_NODENAME" > "$META/node"
 printf '%s\n' "$ARCHIVE" > "$META/archive-directory"
-PID='' CLI_PID='' MON_PID='' COPY_PID=''
+PID='' CLI_PID='' COPY_PID=''
+MON_PIDS=()
 HELPER="$ROOT/scripts/round_storage.py"
 stop_group() {
   local group=$1
+  local grace_s=${2:-2}
   [[ -n "$group" ]] || return 0
   kill -TERM -- "-$group" 2>/dev/null || true
-  sleep 2
-  kill -KILL -- "-$group" 2>/dev/null || true
+  local elapsed=0 state=''
+  while ((elapsed < grace_s)); do
+    state=$(ps -o stat= -p "$group" 2>/dev/null | tr -d ' ' || true)
+    [[ -z "$state" || "$state" == Z* ]] && break
+    sleep 1
+    ((elapsed += 1))
+  done
+  state=$(ps -o stat= -p "$group" 2>/dev/null | tr -d ' ' || true)
+  if [[ -n "$state" && "$state" != Z* ]]; then
+    kill -KILL -- "-$group" 2>/dev/null || true
+  fi
   wait "$group" 2>/dev/null || true
 }
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
-  stop_group "$MON_PID"
+  for monitor_pid in "${MON_PIDS[@]}"; do stop_group "$monitor_pid"; done
   [[ -z "$COPY_PID" ]] || { kill "$COPY_PID" 2>/dev/null || true; wait "$COPY_PID" 2>/dev/null || true; }
   stop_group "$CLI_PID"
-  stop_group "$PID"
+  # Give the Python supervisor time to terminate and reap every server process
+  # group before the final artifact archive checksums any logs.
+  stop_group "$PID" 25
   printf '%s\n' "$result" > "$META/exit-code"
   if [[ "$result" == 0 ]]; then echo completed > "$META/status"; else echo failed > "$META/status"; fi
   echo FINAL_ARCHIVE_START
@@ -86,18 +99,19 @@ echo PREFLIGHT_OK
 ) &
 COPY_PID=$!
 echo model_starting > "$META/status"
-export PORT=7862 HOST=127.0.0.1 TP_SIZE=2
 # The diagnostic input is never clipped by the application. Use the model's
 # verified native context capacity; actor/judge request budgets stay frozen.
 export CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 printf '%s\n' "$CONTEXT_LENGTH" > "$META/service-context-length"
-setsid bash "$CODE/scripts/launch_sglang_local.sh" > "$ARTIFACTS/server.log" 2>&1 &
+setsid "$PY" "$CODE/scripts/launch_sglang_replicas.py" \
+  --root "$CODE" --local-root "$LOCAL" --meta-dir "$META" \
+  --startup-timeout-s 1800 > "$ARTIFACTS/replica-supervisor.log" 2>&1 &
 PID=$!
 ready=0
-startup_deadline=$((SECONDS + 1800))
+startup_deadline=$((SECONDS + 1900))
 while ((SECONDS < startup_deadline)); do
   kill -0 "$PID" 2>/dev/null || { echo SERVER_FAILED; exit 1; }
-  if curl -fsS --connect-timeout 3 --max-time 30 http://127.0.0.1:7862/health >/dev/null; then ready=1; break; fi
+  if [[ -s "$META/replicas-ready.json" ]]; then ready=1; break; fi
   sleep 10
 done
 [[ "$ready" == 1 ]] || { echo SERVER_TIMEOUT; exit 1; }
@@ -110,6 +124,8 @@ if [[ -n "${RSI_RESUME_BASELINES_FROM:-}" ]]; then
 fi
 setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   --base-url http://127.0.0.1:7862/v1 \
+  --candidate-base-urls http://127.0.0.1:7862/v1 http://127.0.0.1:7863/v1 http://127.0.0.1:7864/v1 \
+  --candidate-workers 3 \
   --reflexion-max-tokens "${RSI_REFLEXION_MAX_TOKENS:-8192}" \
   --codegen-max-tokens "${RSI_CODEGEN_MAX_TOKENS:-16384}" \
   --reflexion-temperature "${RSI_REFLEXION_TEMPERATURE:-0.7}" \
@@ -119,13 +135,30 @@ setsid "$PY" -m rsi.cli --dataset "$DATA" --output "$OUT" --language zh \
   "${RESUME_ARGS[@]}" \
   --semantic-model-path "$ROOT/models/bge-small-zh-v1.5" --evolve &
 CLI_PID=$!
-setsid "$PY" "$CODE/scripts/service_monitor.py" \
-  --server-pid "$PID" --client-pid "$CLI_PID" --meta-dir "$META" \
-  --timeout-s 30 --interval-s 10 --threshold 3 --grace-s 120 &
-MON_PID=$!
+while IFS=$'\t' read -r server_pid health_url service_meta; do
+  [[ -n "$server_pid" ]] || continue
+  setsid "$PY" "$CODE/scripts/service_monitor.py" \
+    --server-pid "$server_pid" --client-pid "$CLI_PID" \
+    --meta-dir "$service_meta" --url "$health_url" \
+    --timeout-s 30 --interval-s 10 --threshold 3 --grace-s 120 &
+  MON_PIDS+=("$!")
+done < <("$PY" - "$META/replicas.json" <<'PY'
+import json, sys
+for replica in json.load(open(sys.argv[1]))["replicas"]:
+    print(f'{replica["pid"]}\t{replica["health_url"]}\t{replica["meta_dir"]}')
+PY
+)
+[[ "${#MON_PIDS[@]}" == 3 ]] || { echo REPLICA_MONITOR_SETUP_FAILED; exit 1; }
 set +e
 wait "$CLI_PID"
 result=$?
 set -e
+if [[ "$result" == 0 ]]; then
+  supervisor_state=$(ps -o stat= -p "$PID" 2>/dev/null | tr -d ' ' || true)
+  if [[ -z "$supervisor_state" || "$supervisor_state" == Z* ]]; then
+    echo REPLICA_SUPERVISOR_EXITED
+    result=1
+  fi
+fi
 if [[ "$result" == 0 ]]; then echo FULL_ROUND_FINISHED; fi
 exit "$result"

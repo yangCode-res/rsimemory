@@ -180,7 +180,7 @@ sacct -j 151576 --format=JobID,State,ExitCode,Elapsed,NodeList -P
 scontrol show job 151576 -o
 ```
 
-脚本默认 `gre` 分区，2 GPU、16 CPU、128 GiB、48 小时时限。模型服务在作业节点 `127.0.0.1:7862`；launcher 设置 tensor parallel 2。常规归档是 `runs/full-v03-local-JOBID/`，CLI 产物在其 `result/` 内；Slurm 外层日志是 `runs/full-JOBID.log`。
+脚本当前默认 `gre` 分区，6 GPU、48 CPU、256 GiB、48 小时时限。模型服务在作业节点 `127.0.0.1:7862/7863/7864`，各副本 tensor parallel 2；三个候选并行评估。常规归档是 `runs/full-v03-local-JOBID/`，CLI 产物在其 `result/` 内；Slurm 外层日志是 `runs/full-JOBID.log`。
 
 查看进度优先读 `meta/status`、`meta/exit-code`、`meta/last-sync-status` 和各阶段 `progress.json`，不要向用户输出整份临床日志。查看结果读 `summary.json`、各阶段 `report.json`、`tree.json`，并校验 `_archive-manifest.json`；不要直接打印含提案和案例的整个 summary/tree。作业 `COMPLETED` 只代表脚本退出成功，还需核对候选状态、题目完成数和评分异常。
 
@@ -293,3 +293,5 @@ ssh -N -L 127.0.0.1:3000:127.0.0.1:3000 \
 修复部署 commit：d94afbefa5c652d1f8f9248ed7d4ba6914ce7cfb。Linux 完整回归 185 项、1 跳过，最终补充恢复/失败退出测试 20 项通过。实际旧基线预检两次均 verified（23 个必需文件、772/380 题、BM25/BGE 完整）。恢复作业 153104 已提交，指定 gpu16，从 152743 完整基线恢复；归档 runs/full-v03-local-153104，启动回执 runs/rerun-launch-153104.json。此记录仅表示已提交，不代表候选已产生或准确率已提高；后续须查 run-status.json、各阶段 progress、归档校验与 Slurm 状态。
 
 153104 调度修正：已通过 scontrol 原地解除 gpu16 绑定（ReqNodeList 为空），仅排除此前暂存磁盘满的 gpu36/gpu37。作业号与实验配置保持不变，调度变更已追加到 runs/rerun-launch-153104.json；实际启动仍以 Slurm 状态为准。
+
+2026-10-22 并行执行更新：全量 Slurm 默认申请 6 GPU、48 CPU、256 GiB，启动三个独立 TP=2 SGLang 副本；按 Slurm CUDA_VISIBLE_DEVICES 的实际分配拆分双卡，端口7862/7863/7864，缓存、日志、健康监控各自独立。离线诊断和三个代码生成保持顺序依赖；准备完候选后，三个候选各绑定一个副本并行执行 train→validation。每个候选仍从空记忆完整回放，actor/judge 参数、题目、评分、UCT/Pareto 不变，test继续封存。主线程按提案顺序合并树与收益，轨迹上下文及模型客户端独立。详见 docs/PARALLEL-EXECUTION.md。

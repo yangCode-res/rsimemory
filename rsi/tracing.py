@@ -11,6 +11,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import threading
 import time
 import uuid
 import warnings
@@ -18,6 +19,7 @@ import warnings
 
 _ACTIVE: ContextVar["_State | None"] = ContextVar("rsi_trace_state", default=None)
 _write_failures = 0
+_append_lock = threading.Lock()
 
 
 def _id(nbytes: int) -> str:
@@ -32,24 +34,27 @@ def append_record(path, record) -> bool:
     """
     global _write_failures
     try:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(record, ensure_ascii=False, separators=(",", ":"),
-                             allow_nan=False) + "\n"
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(fd)
-        finally:
-            os.close(fd)
+        with _append_lock:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(record, ensure_ascii=False, separators=(",", ":"),
+                                 allow_nan=False) + "\n"
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(fd)
+            finally:
+                os.close(fd)
         return True
     except Exception:
-        _write_failures += 1
+        with _append_lock:
+            _write_failures += 1
+            failures = _write_failures
         try:
-            warnings.warn(f"RSI trace spool write failed (count={_write_failures})",
+            warnings.warn(f"RSI trace spool write failed (count={failures})",
                           RuntimeWarning, stacklevel=2)
         except Exception:
             # Warnings can be promoted to exceptions by caller configuration.
@@ -192,8 +197,8 @@ def trace_span(name, kind="span", input=None, metadata=None, new_trace=False):
             yield _NoopObservation()
             return
         links = []
+        parent = parent_state.stack[-1] if parent_state.stack else None
         if new_trace:
-            parent = parent_state.stack[-1] if parent_state.stack else None
             if parent is not None:
                 links.append({"trace_id": parent_state.trace_id,
                               "span_id": parent.span_id})
@@ -201,9 +206,15 @@ def trace_span(name, kind="span", input=None, metadata=None, new_trace=False):
                            _inherited_metadata(parent_state), trace_name=str(name))
             parent_span = None
         else:
-            state = parent_state
-            parent_span = state.stack[-1].span_id if state.stack else None
-        token = _ACTIVE.set(state) if new_trace else None
+            # Context copies carry object references. Never mutate the inherited
+            # state's stack: a worker's nested spans would otherwise become
+            # visible to sibling workers that copied the same parent context.
+            state = _State(parent_state.path, parent_state.trace_id,
+                           parent_state.session_id,
+                           dict(parent_state.trace_metadata),
+                           trace_name=parent_state.trace_name,
+                           stack=parent_state.stack)
+            parent_span = parent.span_id if parent is not None else None
         inherited = (_inherited_metadata(state) if not new_trace
                      else dict(state.trace_metadata))
         inherited.update(metadata or {})
@@ -212,6 +223,7 @@ def trace_span(name, kind="span", input=None, metadata=None, new_trace=False):
                           metadata=inherited, links=links)
         old_stack = state.stack
         state.stack = old_stack + (obs,)
+        token = _ACTIVE.set(state)
         try:
             yield obs
         except BaseException as exc:
@@ -221,8 +233,7 @@ def trace_span(name, kind="span", input=None, metadata=None, new_trace=False):
             obs._finish()
         finally:
             state.stack = old_stack
-            if token is not None:
-                _ACTIVE.reset(token)
+            _ACTIVE.reset(token)
     return manager()
 
 

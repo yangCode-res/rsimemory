@@ -1,5 +1,7 @@
 """Project recorded evolution evidence into a compact Langfuse review trace."""
 import json
+import gzip
+import math
 import os
 from pathlib import Path
 from scripts import export_langfuse as otlp
@@ -25,6 +27,69 @@ def comparison(report, baseline, include_types=True):
     return result
 
 
+
+def read_source(imported):
+    """Read archived derived payloads without restoring large uncompressed copies."""
+    path = Path(imported) / 'traces.jsonl'
+    if path.exists():
+        yield from otlp.iter_records(path)
+    else:
+        with gzip.open(str(path) + '.gz', 'rt') as stream:
+            for line in stream:
+                if line.strip():
+                    yield json.loads(line)
+
+
+def search_state(tree, policy):
+    nodes = tree.get('nodes', {})
+    node = nodes.get(policy)
+    if not node:
+        return {'availability': 'not_recorded', 'selected_next': None}
+    visits = node.get('visits', 0)
+    parent = nodes.get(node.get('parent'), {})
+    c = tree.get('c', 1.414)
+    result = {'availability': 'recorded_tree_snapshot', 'Q': node.get('Q'),
+              'visits': visits, 'parent_visits': parent.get('visits'), 'c': c,
+              'reward': 'strict_train_AVG_only; Q includes descendant backpropagation',
+              'formula': 'Q + c * sqrt(log(max(1, parent_visits)) / visits)',
+              'selected_next': None, 'selection_history': 'not_recorded',
+              'uct_kind': 'derived_snapshot_not_historical_selection',
+              'status': node.get('status')}
+    if node.get('status') in ('invalid', 'runtime_failed'):
+        result.update(uct=None, exploration_bonus=None, priority='excluded_negative_infinity')
+    elif not visits:
+        result.update(uct=None, exploration_bonus=None, priority='unvisited_positive_infinity',
+                      eligibility_note='Raw UCT rule; incomplete scoring is not proof of eligibility or selection.')
+    elif isinstance(node.get('Q'), (int, float)) and parent.get('visits') is not None:
+        bonus = c * math.sqrt(math.log(max(1, parent['visits'])) / visits)
+        result.update(uct=node['Q'] + bonus, exploration_bonus=bonus, priority='finite')
+    else:
+        result.update(uct=None, exploration_bonus=None, priority='insufficient_recorded_state')
+    return result
+
+
+def diagnostic_evidence(run):
+    run = Path(run)
+    def load(name):
+        path = run / name
+        return json.loads(path.read_text()) if path.exists() else {}
+    reflection = load('reflexion.json')
+    summary = load('diagnostics/summary.json')
+    selection = load('diagnostics/selection.json')
+    # No patient identifiers or clinical case text in the aggregate summary.
+    aggregate = {key: summary.get(key) for key in
+                 ('total_questions', 'success_count', 'failure_count', 'abnormal_count', 'error_groups')}
+    aggregate['by_type'] = summary.get('outcome_distributions', {}).get('by_type')
+    return {'evidence_scope': 'parent_training_only',
+            'observed_groups': aggregate,
+            'group_interpretation': 'Observed proxies, not established causes; do not infer causal prevalence from these groups.',
+            'sample_coverage': selection.get('actual', {'total': reflection.get('diagnostic_example_count')}),
+            'clusters': reflection.get('clusters', []),
+            'cluster_interpretation': 'Model-reported hypotheses on selected evidence; case counts are cited examples, not population prevalence.',
+            'rationale_schema': reflection.get('rationale_schema'),
+            'diagnosis_status': reflection.get('diagnosis_status', 'historical_recorded' if reflection else 'unavailable')}
+
+
 def build(run, imported, profile):
     run, imported = Path(run), Path(imported)
     manifest = json.loads((imported / 'prepare.json').read_text())
@@ -39,7 +104,7 @@ def build(run, imported, profile):
     questions = {}
     sources = {}
     root = None
-    for row in otlp.iter_records(imported / 'traces.jsonl'):
+    for row in read_source(imported):
         metadata = row.get('metadata', {})
         if row['name'] == 'question' and metadata.get('fold') == 'train':
             questions[(metadata.get('policy'), metadata.get('query_id'))] = row
@@ -59,22 +124,33 @@ def build(run, imported, profile):
     config = json.loads((run / 'config.json').read_text())
     environment = 'fixture-overview' if config.get('fixture') else profile['environment']
     records, scores, reviews = [], [], []
+    diagnostics = diagnostic_evidence(run)
+    diagnosis_id = digest([trace_id, 'diagnostics'])[:16]
     for branch in summary.get('branches', []):
         policy = branch['id']
         parent = branch.get('parent') or 'plain-bm25'
         proposal = branch.get('proposal') or {}
         result = {'policy': policy, 'parent_policy': parent, 'policy_commit': branch.get('commit'),
                   'selection_status': branch.get('status'),
+                  'proposal_direction': proposal.get('direction'),
+                  'target_error_clusters': proposal.get('supporting_cluster_labels', []),
+                  'search_state': search_state(tree, policy),
+                  'diagnosis_observation_id': diagnosis_id,
                   'hypothesis_verdict': 'not_automatically_adjudicated',
                   'cost_comparison_note': 'Generated policies include worker/snapshot isolation overhead.',
                   'folds': {}}
         for fold in ('train', 'validation'):
             path = run / 'branches' / policy / fold / 'report.json'
             parent_path = run / parent / fold / 'report.json'
-            if path.exists() and parent_path.exists():
+            if path.exists():
                 report = json.loads(path.read_text())
-                baseline = json.loads(parent_path.read_text())
+                baseline = json.loads(parent_path.read_text()) if parent_path.exists() else {}
                 result['folds'][fold] = comparison(report, baseline, profile['include_type_metrics'])
+                result['folds'][fold]['status'] = 'report_available'
+            else:
+                progress = path.with_name('progress.json')
+                result['folds'][fold] = {'status': 'report_unavailable', 'AVG': None, 'E2E_AVG': None,
+                    'progress': json.loads(progress.read_text()) if progress.exists() else None}
         result['validation_cost'] = {k: summary.get('comparison', {}).get(policy, {}).get(k)
                                      for k in ('policy_seconds', 'policy_bytes', 'policy_tokens')}
         semantic = summary.get('comparison', {}).get('plain-semantic', {})
@@ -99,7 +175,7 @@ def build(run, imported, profile):
         source_links = [{'trace_id': start['trace_id'], 'span_id': start['span_id']},
                         {'trace_id': end['trace_id'], 'span_id': end['span_id']}]
         row = {'schema_version': 1, 'trace_id': trace_id, 'span_id': digest([trace_id, policy])[:16],
-               'parent_span_id': root_id, 'trace_name': 'evolution.overview', 'name': policy,
+               'parent_span_id': root_id, 'trace_name': 'evolution.overview', 'name': policy + ' | ' + str(proposal.get('direction') or 'direction unavailable')[:120],
                'kind': 'span', 'start_time_ns': start['start_time_ns'], 'end_time_ns': end['end_time_ns'],
                'input': {'model_reported_proposal': proposal,
                          'code_url': source_root_url + '?observation=' + start['span_id']},
@@ -110,10 +186,11 @@ def build(run, imported, profile):
                'environment': environment, 'tags': ['evolution-overview', identity, policy],
                'links': source_links}
         records.append(row)
-        reviews.append({key: result[key] for key in ('policy','parent_policy','policy_commit','selection_status','validation_cost','validation_delta_vs_semantic_pp')})
+        reviews.append({key: result[key] for key in ('policy','parent_policy','policy_commit','selection_status','proposal_direction','target_error_clusters','search_state','validation_cost','validation_delta_vs_semantic_pp')})
         reviews[-1]['validation_macro_E2E_AVG'] = result['folds'].get('validation',{}).get('E2E_AVG')
         reviews[-1]['validation_delta_vs_parent_pp'] = result['folds'].get('validation',{}).get('delta_vs_parent_pp',{}).get('E2E_AVG')
         reviews[-1]['observation_id'] = row['span_id']
+        reviews[-1]['folds'] = result['folds']
         validation = result['folds'].get('validation', {})
         values = {'validation_macro_AVG': validation.get('AVG'),
                   'validation_macro_E2E_AVG': validation.get('E2E_AVG'),
@@ -121,16 +198,55 @@ def build(run, imported, profile):
                   'validation_delta_vs_semantic_pp': result['validation_delta_vs_semantic_pp'],
                   'validation_policy_seconds': result['validation_cost'].get('policy_seconds'),
                   'validation_policy_peak_bytes': result['validation_cost'].get('policy_bytes')}
+        for fold in ('train', 'validation'):
+            fold_result = result['folds'].get(fold, {})
+            for metric in ('AVG', 'E2E_AVG', 'abnormal_rate'):
+                values[fold + '_' + metric] = fold_result.get(metric)
+        for metric in ('Q', 'visits', 'exploration_bonus', 'uct'):
+            values['search_' + metric] = result['search_state'].get(metric)
         for name, value in values.items():
             if isinstance(value, (int, float)):
                 scores.append(score(row, name, value, 'Recorded aggregate; not a hypothesis/cause verdict.'))
+    cluster_index = []
+    for index, cluster in enumerate(diagnostics['clusters']):
+        identifier = digest([trace_id, 'cluster', index])[:16]
+        label = cluster.get('label', 'unnamed')
+        case_ids = cluster.get('supporting_case_ids', cluster.get('case_ids', []))
+        links = []
+        for case in case_ids:
+            question = questions.get(('plain-bm25', case))
+            links.append({'query_id': case, 'available': question is not None,
+                          'url': '/project/memory-policy-rsi/traces/' + question['trace_id'] if question else None})
+        item = {'model_reported_cluster': cluster, 'cited_case_count': len(case_ids),
+                'supporting_training_cases': links,
+                'addressed_by_candidates': [r['policy'] for r in reviews if label in r['target_error_clusters']],
+                'causal_verdict': 'not_automatically_adjudicated',
+                'count_scope': 'cited_examples_only_not_full_training_prevalence'}
+        records.append({'schema_version': 1, 'trace_id': trace_id, 'span_id': identifier,
+            'parent_span_id': diagnosis_id, 'trace_name': 'evolution.overview',
+            'name': 'error.cluster | ' + str(label)[:120], 'kind': 'span',
+            'start_time_ns': root['start_time_ns'], 'end_time_ns': root['end_time_ns'],
+            'input': {'evidence_scope': 'parent_training_only'}, 'output': item,
+            'metadata': metadata, 'status': 'ok', 'provenance': 'derived_from_recorded_artifacts',
+            'environment': environment, 'tags': ['evolution-overview', identity, 'error-cluster']})
+        cluster_index.append({'label': label, 'cited_case_count': len(case_ids),
+                              'observation_id': identifier, 'addressed_by_candidates': item['addressed_by_candidates']})
+    diagnostic_output = {key: value for key, value in diagnostics.items() if key != 'clusters'}
+    diagnostic_output['clusters'] = cluster_index
+    records.append({'schema_version': 1, 'trace_id': trace_id, 'span_id': diagnosis_id,
+        'parent_span_id': root_id, 'trace_name': 'evolution.overview',
+        'name': 'diagnostics | observed errors and model hypotheses', 'kind': 'span',
+        'start_time_ns': root['start_time_ns'], 'end_time_ns': root['end_time_ns'],
+        'input': {'evidence_scope': 'parent_training_only'}, 'output': diagnostic_output,
+        'metadata': metadata, 'status': 'ok', 'provenance': 'derived_from_recorded_artifacts',
+        'environment': environment, 'tags': ['evolution-overview', identity, 'diagnostics']})
     records.append({'schema_version': 1, 'trace_id': trace_id, 'span_id': root_id,
         'trace_name': 'evolution.overview', 'name': 'evolution.overview', 'kind': 'span',
         'start_time_ns': root['start_time_ns'], 'end_time_ns': root['end_time_ns'],
         'input': {'source_execution_url': source_root_url,
                   'framework_commit': root.get('metadata', {}).get('implementation_commit'),
                   'algorithm': tree.get('algorithm')},
-        'output': {'candidates': reviews, 'test_evaluated': summary.get('test_evaluated'),
+        'output': {'diagnostics': diagnostic_output, 'candidates': reviews, 'test_evaluated': summary.get('test_evaluated'),
                    'reading_order': 'proposal -> code -> train/validation -> type tradeoffs -> cost -> supporting cases',
                    'hypothesis_verdict': 'Requires controlled intervention; score changes alone do not prove mechanism.'},
         'metadata': metadata, 'status': 'ok', 'provenance': 'derived_from_recorded_artifacts',

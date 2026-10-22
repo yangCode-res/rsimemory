@@ -301,3 +301,16 @@ ssh -N -L 127.0.0.1:3000:127.0.0.1:3000 \
 153104 调度修正：已通过 scontrol 原地解除 gpu16 绑定（ReqNodeList 为空），仅排除此前暂存磁盘满的 gpu36/gpu37。作业号与实验配置保持不变，调度变更已追加到 runs/rerun-launch-153104.json；实际启动仍以 Slurm 状态为准。
 
 2026-10-22 并行执行更新：全量 Slurm 默认申请 6 GPU、48 CPU、256 GiB，启动三个独立 TP=2 SGLang 副本；按 Slurm CUDA_VISIBLE_DEVICES 的实际分配拆分双卡，端口7862/7863/7864，缓存、日志、健康监控各自独立。离线诊断和三个代码生成保持顺序依赖；准备完候选后，三个候选各绑定一个副本并行执行 train→validation。每个候选仍从空记忆完整回放，actor/judge 参数、题目、评分、UCT/Pareto 不变，test继续封存。主线程按提案顺序合并树与收益，轨迹上下文及模型客户端独立。详见 docs/PARALLEL-EXECUTION.md。
+
+
+## 2026-10-22 Evolution overview v2
+
+Configuration now selects evolution-overview-v2. Each candidate shows proposal direction, referenced error clusters, strict train/validation AVG and E2E AVG, abnormal rate, per-type deltas, cost, and a recorded-tree search-state snapshot. Native Scores include train/validation results plus finite Q, visits, exploration bonus and UCT. Missing scores stay null. Infinite priorities are explicit strings, never zero or non-standard JSON Infinity.
+
+Diagnostics is a separate parent node with one child per model-reported cluster. It separates whole-training observed error proxies from sampled model attribution, shows sample coverage, cited-case counts, original attribution/uncertainty/discriminating tests, candidate links and resolvable parent-training case links. Cited examples do not estimate causal prevalence; patient maps and raw case text are omitted from aggregate summaries. Old and structured-v4 cluster schemas are both supported.
+
+UCT is calculated from the recorded tree using the executor formula, not a historical selection event. selected_next stays null and selection_history=not_recorded; this view does not introduce multi-round search or change rewards/eligibility. Q includes descendant backpropagation, not necessarily the node's own baseline accuracy. Future actual selection history requires explicit executor event capture.
+
+151576 v2 published as trace 65e077747ce5676001d4efca41f7e20b: 8 observations, 40 scores, server-side verification=true with zero missing/duplicate/field mismatches. Existing v1 and original execution records retained. The overview reads compressed derived traces left by log cleanup. Restore other compressed import payloads before reusing tools that require uncompressed filenames.
+
+Future scripts.langfuse_run imports automatically publish v2. This is still independent import, not live synchronization. Running 153107 is unchanged and has not been presented as a completed or imported v2 run. Nine overview tests pass, covering numerical UCT parity, null/infinite states, cluster evidence links, sampling boundaries and compressed input.

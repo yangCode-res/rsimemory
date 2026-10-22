@@ -1,6 +1,6 @@
 import copy
 import unittest
-from scripts.evolution_overview import comparison,delta
+from scripts.evolution_overview import comparison,delta,search_state,diagnostic_evidence,read_source
 
 class OverviewTests(unittest.TestCase):
     def test_null_strict_score_never_becomes_zero(self):
@@ -42,6 +42,8 @@ class OverviewTests(unittest.TestCase):
             write(run/'summary.json',{'branches':[{'id':'candidate-1','parent':'plain-bm25',
                   'status':'evaluated','proposal':{'supporting_case_ids':['case1']}}]})
             write(run/'tree.json',{'algorithm':'single expansion'})
+            write(run/'reflexion.json',{'clusters':[{'label':'retrieval',
+                'supporting_case_ids':['case1'], 'attribution_status':'unresolved'}]})
             for fold in ['train','validation']:
                 write(run/'plain-bm25'/fold/'report.json',{'AVG':.2,'E2E_AVG':.2})
                 write(run/'branches/candidate-1'/fold/'report.json',{'AVG':.3,'E2E_AVG':.3})
@@ -58,6 +60,58 @@ class OverviewTests(unittest.TestCase):
             self.assertTrue(all(r['environment']=='fixture-overview' for r in records))
             self.assertTrue(records[0]['output']['supporting_training_cases'][0]['url'].endswith('a'*32))
             self.assertEqual(records[0]['output']['hypothesis_verdict'],'not_automatically_adjudicated')
+            cluster=next(r for r in records if r['name'].startswith('error.cluster'))
+            self.assertEqual(cluster['output']['cited_case_count'],1)
+            self.assertTrue(cluster['output']['supporting_training_cases'][0]['url'].endswith('a'*32))
+            self.assertEqual(records[-1]['output']['diagnostics']['clusters'][0]['label'],'retrieval')
+            self.assertEqual(records[0]['output']['folds']['train']['E2E_AVG'],.3)
             profile['include_training_case_links']=False
             records,_,_=build(run,imported,profile)
             self.assertEqual(records[0]['output']['case_link_status'],'disabled_by_profile')
+
+
+class SearchEvidenceTests(unittest.TestCase):
+    def test_uct_matches_executor_without_claiming_selection(self):
+        from rsi.evolution import uct
+        tree={'c':1.414,'nodes':{'root':{'visits':5},'child':{
+            'parent':'root','visits':2,'Q':.3,'status':'evaluated'}}}
+        state=search_state(tree,'child')
+        self.assertAlmostEqual(state['uct'],uct(tree['nodes']['child'],5))
+        self.assertIsNone(state['selected_next'])
+        self.assertEqual(state['selection_history'],'not_recorded')
+
+    def test_nonfinite_priorities_are_json_safe_and_not_zero(self):
+        import json
+        for status,priority in [('pending','unvisited_positive_infinity'),
+                                ('incomplete_scoring','unvisited_positive_infinity'),
+                                ('invalid','excluded_negative_infinity')]:
+            state=search_state({'nodes':{'c':{'visits':0,'status':status}}},'c')
+            self.assertIsNone(state['uct'])
+            self.assertEqual(state['priority'],priority)
+            json.dumps(state,allow_nan=False)
+        self.assertEqual(search_state({},'missing')['availability'],'not_recorded')
+
+    def test_diagnostics_keep_sampling_separate_and_omit_patient_map(self):
+        import tempfile,json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d);(p/'diagnostics').mkdir()
+            (p/'diagnostics/summary.json').write_text(json.dumps({
+                'total_questions':100,'failure_count':60,'patients':{'private':100},
+                'error_groups':{'tool_error_observed':5}}))
+            (p/'reflexion.json').write_text(json.dumps({'clusters':[{
+                'label':'retrieval','supporting_case_ids':['example'],
+                'attribution_status':'unresolved'}],'diagnostic_example_count':16}))
+            result=diagnostic_evidence(p)
+            self.assertEqual(result['observed_groups']['failure_count'],60)
+            self.assertEqual(result['sample_coverage']['total'],16)
+            self.assertNotIn('patients',result['observed_groups'])
+            self.assertEqual(result['clusters'][0]['attribution_status'],'unresolved')
+
+    def test_compressed_payload_remains_readable(self):
+        import tempfile,gzip,json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            with gzip.open(Path(d)/'traces.jsonl.gz','wt') as f:
+                f.write(json.dumps({'name':'question'})+'\n')
+            self.assertEqual(list(read_source(d)),[{'name':'question'}])

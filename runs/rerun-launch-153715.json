@@ -1,0 +1,43 @@
+{
+  "job_id": 153715,
+  "submitted_at": "2026-10-22T09:51:33.879714+00:00",
+  "implementation_commit": "2989506885619d9dc89e1385c80f1b0c98d716f0",
+  "model_arm": "deepseek-v4-flash",
+  "optimizer_nodes": [
+    "diagnosis",
+    "proposals",
+    "codegen"
+  ],
+  "comparison_job": 153572,
+  "comparison_kind": "exploratory_not_controlled",
+  "actor_judge": "qwen3.8-27b",
+  "search": {
+    "max_candidates": 6,
+    "children_per_expansion": 2,
+    "max_depth": 3,
+    "c": 1.414
+  },
+  "initial_state": "fresh BM25 root; BGE baseline comparison; no candidate restoration",
+  "baseline_reuse": false,
+  "reward": "development_validation_E2E_AVG",
+  "test_evaluated": false,
+  "gpus": 6,
+  "replicas": 3,
+  "external_api_preflight": "synthetic-only before model startup on compute node",
+  "profile": "configs/llm-roles-deepseek-v4-flash.yaml",
+  "profile_sha256": "f8fb4470fa2f971b80be580cd2edf8443839aee8ea5096737a5b9cc3a4c78bd5",
+  "known_confounders": [
+    "actor finalization protocol",
+    "actor output budget 1024 vs 4096",
+    "optimizer output caps vs provider-context limit"
+  ],
+  "archive": "/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/runs/full-v03-local-153715",
+  "command": [
+    "sbatch",
+    "--parsable",
+    "--job-name=memory-rsi-deepseek6",
+    "--exclude=gpu36,gpu37",
+    "--export=ALL,RSI_CONTINUOUS_SEARCH=1,RSI_LLM_CONFIG=configs/llm-roles-deepseek-v4-flash.yaml,RSI_IMPLEMENTATION_COMMIT=2989506885619d9dc89e1385c80f1b0c98d716f0,RSI_RESUME_BASELINES_FROM=",
+    "/file_storage01/home/juanliu/25_ymj/code/memory-policy-rsi/scripts/full_round.sbatch"
+  ]
+}

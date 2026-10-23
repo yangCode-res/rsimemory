@@ -342,3 +342,22 @@ Future scripts.langfuse_run imports automatically publish v2. This is still inde
 用户授权启动。作业153572已提交并确认RUNNING，节点gpu22；执行提交a25958cdd075df08afc90b6222686a932982b99a。显式启用连续搜索与configs/llm-roles.yaml：6新候选、每次2个、深度3、c=1.414、开发集validation E2E AVG奖励，测试集封存。6GPU/3个TP2副本；因旧基线缺少YAML角色指纹，本次不复用基线，重新评测BM25/BGE。预检隔离/快照/中文检索通过。启动回执runs/rerun-launch-153572.json，归档runs/full-v03-local-153572。RUNNING只表示已调度，模型健康及具体阶段仍需检查；不代表候选已生成或进化有效。
 
 2026-10-22 输出预算与默认接入更新：所有新任务默认读取 configs/llm-roles.yaml（可用 RSI_LLM_CONFIG / --llm-config 选路径），配置缺失或非法即失败。actor=4096、judge=1024、diagnosis/proposals/codegen max_tokens=null；null不发送max_tokens，已核验本地SGLang会按剩余物理上下文限制生成，不回退小默认预算。正常EOS及超时仍生效。CLI、全量Slurm、smoke及新连续搜索均接入，保存YAML快照和生效参数。历史运行保持只读；actor预算变化要求新基线，不能直接复用旧1024预算分数。详见docs/LLM-ROLES.md和聚合用量JSON。
+
+
+## OpenCode DeepSeek V4 Flash profile (2026-10-22)
+
+Working-tree configs/llm-roles.yaml now pins diagnosis/proposals/codegen to deepseek-v4-flash at https://opencode.ai/inference/openai/v1, using OPENCODE_API_KEY. Actor/judge and existing temperature/output settings are preserved. Named copy: configs/llm-roles-deepseek-v4-flash.yaml. Provider identity and structured JSON schema support were verified with synthetic-only prompts; no clinical input was sent. Set the User-Agent rsi-experiment/1.0 for this provider to avoid the observed 403 with Python's default client identifier.
+
+Private key is in .secrets/llm.env (directory 0700, file 0600, ignored by Git). Full/smoke launchers source RSI_LLM_ENV_FILE, defaulting to that private file, without copying credentials to artifacts or CLI arguments. Login-node shell direct invocations must source the private file themselves before starting CLI. Do not copy the key into YAML, documentation, or Git. External stages will send their actual configured inputs to OpenCode when a new real run is launched; current frozen runs are unchanged.
+
+These edits are in the working tree alongside pre-existing uncommitted output-limit/default-config changes. No real task was relaunched or silently switched. Before a launcher that snapshots Git HEAD is used, ensure the intended working-tree changes are committed, or select a reviewed commit containing the configuration and private-env loading hook.
+
+
+## 2026-10-22 Actor finalization v2
+
+预算耗尽后的预留作答调用改为answer-only system + JSON Schema，宿主补final标记，独立校验非空字符串和无额外字段。仍只额外调用一次，不重试、不编答案；截断/错误仍明确失败。actor_protocol_version=react-final-answer-schema-v2纳入配置/基线恢复检查，旧实验不改写，153572原快照不受影响。详见docs/ACTOR-FINALIZATION.md。
+
+
+## 2026-10-22 DeepSeek探索性连续搜索153715
+
+用户授权先排DeepSeek，明确不补排新Qwen对照，现有153572仅作探索比较。153715已提交，首次核查PENDING/AssocGrpGRES；153572仍RUNNING，未取消。执行提交2989506885619d9dc89e1385c80f1b0c98d716f0，固定configs/llm-roles-deepseek-v4-flash.yaml（从作业代码快照读取），诊断/提案/codegen用DeepSeek，Actor/Judge Qwen。6候选、每次2、深度3、开发E2E UCT奖励；重新测BM25/BGE，无候选快照继承，test封存。新组有actor finalization v2、4096 actor输出及optimizer无显式输出cap，与153572不同，不能作模型单变量因果结论。计划docs/experiments/deepseek-exploratory-v1.json，启动回执runs/rerun-launch-153715.json。计算节点在模型预热前执行synthetic-only外部API预检，凭据从私有env加载，不入归档；对应46项回归通过。后续固定提案交换codegen/固定模型换Prompt仅是分析方案，未启动。

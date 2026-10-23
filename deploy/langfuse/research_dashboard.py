@@ -20,7 +20,8 @@ def snapshot(root):
         result = directory / 'result'
         config = load(result / 'config.json')
         summary = load(result / 'summary.json')
-        if not config or config.get('fixture') or not summary:
+        state = load(result / 'run-status.json')
+        if not config or config.get('fixture') or (not summary and not state):
             continue
         tree = load(result / 'tree.json')
         state = load(result / 'run-status.json')

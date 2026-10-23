@@ -36,3 +36,14 @@ class DashboardTests(unittest.TestCase):
             self.assertNotIn('overview',m.snapshot(root)['runs'][0]['links'])
             (v/'verification.json').write_text('{"verified":true}')
             self.assertTrue(m.snapshot(root)['runs'][0]['links']['overview'].endswith('/abc'))
+
+
+    def test_baseline_running_before_summary_exists_is_visible(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);r=root/'runs/full-v03-local-123/result';r.mkdir(parents=True)
+            (r/'config.json').write_text('{"fixture":false}')
+            (r/'run-status.json').write_text('{"status":"running","stage":"baseline.train"}')
+            data=m.snapshot(root)
+            self.assertEqual(len(data['runs']),1)
+            self.assertEqual(data['runs'][0]['stage'],'baseline.train')
+            self.assertEqual(len(data['runs'][0]['policies']),2)

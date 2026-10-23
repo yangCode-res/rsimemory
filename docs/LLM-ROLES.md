@@ -66,3 +66,12 @@ null表示客户端不发送max_tokens字段，也不替换成1024、128或一�
 YAML是节点生效参数来源：显式角色字段覆盖defaults和旧CLI参数的继承值；历史--reflexion-max-tokens等仍作为未在YAML声明字段时的fallback。全量脚本不再重复传入旧的RSI_REFLEXION_MAX_TOKENS等生成预算变量。修改节点预算应编辑选中的YAML。config.llm_roles.resolved及effective_generation_settings记录实际参数，旧optimizer_generation_settings仅保留CLI输入fallback。
 
 每个新run保存llm-roles.yaml原始快照、源SHA和解析SHA。连续恢复要求所选YAML与冻结快照内容完全一致，路径可以改变（例如使用归档快照）；改预算应新开实验。没有冻结YAML的旧连续任务不能无声接入新默认配置。actor1024→4096属于回答器配置变化，旧基线不可直接复用；新预算实验必须重新建立同预算BM25/BGE基线。ReAct提示、工具/轮数、judge模型与温度、评分规则保持原样。
+
+
+## OpenCode DeepSeek V4 Flash profile (2026-10-22)
+
+Working-tree configs/llm-roles.yaml now pins diagnosis/proposals/codegen to deepseek-v4-flash at https://opencode.ai/inference/openai/v1, using OPENCODE_API_KEY. Actor/judge and existing temperature/output settings are preserved. Named copy: configs/llm-roles-deepseek-v4-flash.yaml. Provider identity and structured JSON schema support were verified with synthetic-only prompts; no clinical input was sent. Set the User-Agent rsi-experiment/1.0 for this provider to avoid the observed 403 with Python's default client identifier.
+
+Private key is in .secrets/llm.env (directory 0700, file 0600, ignored by Git). Full/smoke launchers source RSI_LLM_ENV_FILE, defaulting to that private file, without copying credentials to artifacts or CLI arguments. Login-node shell direct invocations must source the private file themselves before starting CLI. Do not copy the key into YAML, documentation, or Git. External stages will send their actual configured inputs to OpenCode when a new real run is launched; current frozen runs are unchanged.
+
+These edits are in the working tree alongside pre-existing uncommitted output-limit/default-config changes. No real task was relaunched or silently switched. Before a launcher that snapshots Git HEAD is used, ensure the intended working-tree changes are committed, or select a reviewed commit containing the configuration and private-env loading hook.
